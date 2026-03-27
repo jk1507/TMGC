@@ -9,7 +9,7 @@
 // CONFIGURATION
 // ──────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
-    apiBase: "http://localhost:5001",
+    apiBase: "https://tmgc.onrender.com",
     analysisTimeout: 15000,   // 15s timeout
     monitorInterval: 30000,   // 30s for real-time monitor simulation
     maxMonitorHistory: 10,
