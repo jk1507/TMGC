@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+from dotenv import load_dotenv
 import shutil
 import socket
 from dataclasses import dataclass
@@ -36,6 +37,8 @@ try:
     from google import genai
 except Exception:
     genai = None
+
+load_dotenv()
 
 # Import utils helpers for ML feature extraction
 try:
@@ -570,6 +573,84 @@ async def analyze_get(target: str = Query(min_length=3, max_length=2048)) -> Ana
 async def analyze_post(request: AnalyzeRequest = Body(...)) -> AnalyzeResponse:
     return await run_analysis(request.url)
 
+@app.post("/api/v1/ai-analysis")
+async def ai_analysis(payload: dict):
+    url = payload.get("url")
+
+    if not url:
+        raise HTTPException(
+            status_code=400,
+            detail="URL is required"
+        )
+
+    raw_context = payload.get("raw_context", "")
+
+    if not raw_context:
+        raise HTTPException(
+            status_code=400,
+            detail="No RAW_TXT_LOG available. Run ANALYZE first."
+        )
+
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Gemini API key not loaded"
+        )
+
+    prompt = f"""
+    You are a Senior SOC Cybersecurity Analyst.
+
+    Analyze ONLY the raw evidence.
+
+    STRICT RULES:
+    - DO NOT use risk_score
+    - DO NOT use XGBoost
+    - DO NOT use heuristics
+    - ONLY use raw evidence
+
+    Tasks:
+    1. Explain whether SAFE / SUSPICIOUS / PHISHING
+    2. Explain WHY
+    3. Detect false positives
+    4. Explain infrastructure behavior
+    5. Explain SSL/DNS/WHOIS findings
+    6. Highlight suspicious indicators
+    7. Human-friendly SOC report
+
+    RAW EVIDENCE:
+
+    {raw_context}
+    """
+
+    client = genai.Client(api_key=api_key)
+
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+
+        ai_text = getattr(response, "text", "")
+
+    except Exception as e:
+        ai_text = f"""
+AI Analysis temporarily unavailable.
+
+Reason:
+{str(e)}
+
+Possible fixes:
+- Wait a few minutes
+- Create a new Gemini API key
+- Upgrade Gemini quota
+"""
+
+    return {
+        "formatted_report": ai_text
+    }
 
 async def run_analysis(raw_target: str) -> AnalyzeResponse:
     domain = clean_domain(raw_target)

@@ -1,6 +1,9 @@
 import React, { useMemo, useState } from "react";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api/v1/analyze";
+const AI_ANALYSIS_API =
+  import.meta.env.VITE_AI_ANALYSIS_API ||
+  "http://127.0.0.1:8000/api/v1/ai-analysis";
 const RAW_TABS = ["dig", "mx", "ip_whois", "domain_whois", "ssl", "curl", "nc"];
 const KEYWORDS = [
   "CRITICAL",
@@ -48,6 +51,8 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("dig");
+  const [aiReport, setAiReport] = useState(null);
+  const [loadingAI, setLoadingAI] = useState(false);
 
   const data = useMemo(() => normalizeResult(result), [result]);
   const highRisk = (data?.risk_score || 0) > 60;
@@ -95,6 +100,60 @@ function App() {
       setLoading(false);
     }
   }
+
+  async function runAIAnalysis() {
+  const cleanTarget = target.trim();
+  if (!cleanTarget) return;
+
+  setLoadingAI(true);
+  setError("");
+  setAiReport(null);
+
+  setLogs((current) => [
+    ...current,
+    ">> STREAMING RAW MATRIX INTO AI CORE...",
+    ">> EXECUTING CONTEXTUAL THREAT REASONING...",
+  ]);
+
+  try {
+    const response = await fetch(AI_ANALYSIS_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+  url: cleanTarget,
+  raw_context: data?.raw_context || "",
+}),
+    });
+
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(
+        detail.detail || `Backend returned HTTP ${response.status}`
+      );
+    }
+
+    const payload = await response.json();
+
+    setAiReport(payload);
+
+    setLogs((current) => [
+      ...current,
+      ">> FALSE POSITIVE CHECK COMPLETE.",
+      ">> AI ANALYSIS REPORT READY.",
+    ]);
+  } catch (err) {
+    setError(err.message || "AI analysis failed.");
+
+    setLogs((current) => [
+      ...current,
+      `!! AI CORE FAILURE: ${err.message}`,
+    ]);
+  } finally {
+    setLoadingAI(false);
+  }
+}
 
   function exportJson() {
     if (!data) return;
@@ -282,6 +341,13 @@ ${commands}
             >
               {loading ? "RUNNING" : "ANALYZE"}
             </button>
+            <button
+  className="border border-cyan-500 px-4 py-3 font-bold text-cyan-300 hover:bg-cyan-500 hover:text-black disabled:opacity-50"
+  disabled={loadingAI}
+  onClick={runAIAnalysis}
+>
+  {loadingAI ? "AI_RUNNING" : "AI_ANALYSIS"}
+</button>
           </div>
 
           {error && <div className="mt-4 border border-red-500 p-3 text-red-400">!! {error}</div>}
@@ -343,8 +409,33 @@ ${commands}
           </pre>
 
           <div className="mt-4 max-h-64 overflow-y-auto whitespace-pre-wrap border border-green-900 p-3 text-xs text-green-300">
-            {data ? <HighlightedText text={data.ai_verdict} /> : "AI EVALUATION LOG WILL MATERIALIZE HERE AFTER PIPELINE COMPLETION."}
-          </div>
+  {data ? (
+    <HighlightedText text={data.ai_verdict} />
+  ) : (
+    "AI EVALUATION LOG WILL MATERIALIZE HERE AFTER PIPELINE COMPLETION."
+  )}
+</div>
+
+<div className="mt-4 border border-cyan-800 bg-[#001522] p-3 text-cyan-300">
+  <h3 className="mb-2 border-b border-cyan-700 pb-2 font-bold">
+    AI ANALYSIS REPORT
+  </h3>
+
+  <div className="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-6">
+    {loadingAI ? (
+      ">> AI CORE EXECUTING DEEP CYBER ANALYSIS..."
+    ) : aiReport ? (
+      <HighlightedText
+        text={
+          aiReport.formatted_report ||
+          JSON.stringify(aiReport, null, 2)
+        }
+      />
+    ) : (
+      "SEPARATE AI CYBER ANALYSIS WILL APPEAR HERE."
+    )}
+  </div>
+</div>
         </aside>
       </section>
     </main>
@@ -411,6 +502,7 @@ function normalizeResult(result) {
     parsed_meta: parsedMeta,
     security_header_details: details.length ? details : defaultHeaderRows(),
     raw_logs: rawLogs,
+    raw_context: result.raw_context || "",
     findings: result.findings || [],
     ai_verdict: result.ai_verdict || result.ai_markdown_report || "",
     risk_score: Number(result.risk_score || 0),
