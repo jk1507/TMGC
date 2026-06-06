@@ -9,7 +9,13 @@
 // CONFIGURATION
 // ──────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
-    apiBase: "https://tmgc.onrender.com",
+    apiBase: (function () {
+        // Prefer local backend during development
+        if (location.protocol === "file:" || location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+            return "http://localhost:5001";
+        }
+        return "https://tmgc.onrender.com";
+    })(),
     analysisTimeout: 15000,   // 15s timeout
     monitorInterval: 30000,   // 30s for real-time monitor simulation
     maxMonitorHistory: 10,
@@ -125,6 +131,7 @@ function renderExamples(examples) {
 async function analyzeDomain() {
     const input = document.getElementById("domainInput");
     const domain = input.value.trim();
+    const official = (document.getElementById("officialInput")?.value || "").trim();
 
     if (!domain) {
         showError("Please enter a domain name to analyze.");
@@ -169,7 +176,7 @@ async function analyzeDomain() {
         const res = await fetch(`${CONFIG.apiBase}/analyze-domain`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ domain }),
+            body: JSON.stringify({ domain, inspect_website: true, official_domain: official || undefined }),
             signal: controller.signal,
         });
 
@@ -190,7 +197,7 @@ async function analyzeDomain() {
         renderResults(data);
 
         // Trigger alert for high-risk domains
-        if (data.risk_level === "High") {
+        if (data.risk_level === "High" || data.risk_level === "Critical") {
             triggerAlert(data);
         }
 
@@ -217,26 +224,29 @@ function renderResults(data) {
     document.getElementById("resultDomain").textContent = data.domain;
 
     const badge = document.getElementById("resultBadge");
-   const finalLevel = data.hybrid_risk_level || data.risk_level;
+    const finalLevel = data.risk_level;
 
-badge.textContent = `${finalLevel.toUpperCase()} RISK`;
-badge.className = `result-badge badge-${finalLevel.toLowerCase()}`;
+    const verdict = (typeof data.is_fake === "boolean")
+        ? (data.is_fake ? "FAKE / PHISHING LIKELY" : "LIKELY LEGIT")
+        : `${finalLevel.toUpperCase()} RISK`;
+    badge.textContent = verdict;
+    badge.className = `result-badge badge-${finalLevel.toLowerCase()}`;
 
     // ── Metrics ─────────────────────────────────────────────────────────────
     const scoreVal = document.getElementById("scoreValue");
-    const finalScore = Math.round(data.hybrid_score || data.risk_score);
-scoreVal.textContent = finalScore;
-    scoreVal.className = `metric-value text-${data.risk_level.toLowerCase()} glow-${riskToGlow(data.risk_level)}`;
+    const finalScore = Math.round((data.score ?? data.risk_score ?? 0) * 1);
+    scoreVal.textContent = finalScore;
+    scoreVal.className = `metric-value text-${finalLevel.toLowerCase()} glow-${riskToGlow(finalLevel)}`;
 
     // Animate score bar
     const bar = document.getElementById("scoreBar");
     bar.style.width = "0%";
-    bar.style.background = riskToColor(data.risk_level);
+    bar.style.background = riskToColor(finalLevel);
     setTimeout(() => { bar.style.width = `${finalScore}%`; }, 100);
 
     const lvlEl = document.getElementById("riskLevel");
     lvlEl.textContent = finalLevel;
-lvlEl.className = `metric-value text-${finalLevel.toLowerCase()} glow-${riskToGlow(finalLevel)}`;
+    lvlEl.className = `metric-value text-${finalLevel.toLowerCase()} glow-${riskToGlow(finalLevel)}`;
     const attackEl = document.getElementById("attackType");
     attackEl.textContent = data.attack_type;
     attackEl.className = "metric-value metric-attack";
@@ -250,6 +260,9 @@ lvlEl.className = `metric-value text-${finalLevel.toLowerCase()} glow-${riskToGl
 
     // ── Detection Signals ────────────────────────────────────────────────────
     renderDetection(data);
+
+    // ── Website inspection ───────────────────────────────────────────────────
+    renderWebsiteInspection(data.website || null);
 
     // ── Domain Features ──────────────────────────────────────────────────────
     renderFeatures(data.features || {});
@@ -312,10 +325,77 @@ lvlEl.className = `metric-value text-${finalLevel.toLowerCase()} glow-${riskToGl
 
     // Scroll to results
     panel.scrollIntoView({ behavior: "smooth", block: "start" });
-    // 🚨 Trigger BIG alert if score >= 50
-if ((data.hybrid_score || data.risk_score) >= 50) {
-    triggerHighAlert(data);
+    // 🚨 Trigger BIG alert if score >= 60 (high/critical)
+    if ((data.score ?? data.risk_score ?? 0) >= 60) {
+        triggerHighAlert(data);
+    }
 }
+
+function renderWebsiteInspection(website) {
+    const section = document.getElementById("websiteSection");
+    const grid = document.getElementById("websiteGrid");
+    if (!section || !grid) return;
+
+    if (!website) {
+        section.style.display = "none";
+        return;
+    }
+
+    section.style.display = "block";
+
+    if (!website.available) {
+        const err = website.error || website.note || website.source || "Unavailable";
+        grid.innerHTML = `
+      <div class="detail-item">
+        <div class="detail-item-label">STATUS</div>
+        <div class="detail-item-value text-medium">${escHtml(String(err))}</div>
+      </div>
+    `;
+        return;
+    }
+
+    const sig = website.signals || {};
+    const redirects = (website.redirect_chain || []).map(r => `${r.code} ${r.from} → ${r.to}`).slice(0, 5);
+    const extActions = (sig.external_form_actions || []).slice(0, 5);
+
+    const items = [
+        { label: "FINAL URL", value: website.final_url || website.start_url || "—" },
+        { label: "HTTP STATUS", value: website.status ?? "—", flag: (website.status && website.status >= 400) },
+        { label: "TITLE", value: sig.title || "—" },
+        { label: "HAS FORM", value: sig.has_form ? "YES" : "NO", flag: sig.has_form },
+        { label: "PASSWORD INPUT", value: sig.has_password_input ? "YES" : "NO", flag: sig.has_password_input },
+        { label: "EMAIL INPUT", value: sig.has_email_input ? "YES" : "NO", flag: sig.has_email_input },
+        { label: "OTP KEYWORDS", value: sig.has_otp_keywords ? "YES" : "NO", flag: sig.has_otp_keywords },
+        { label: "REDIRECTS", value: redirects.length ? redirects.join(" | ") : "None" },
+        { label: "EXTERNAL FORM ACTIONS", value: extActions.length ? extActions.join(" | ") : "None", flag: extActions.length > 0 },
+    ];
+
+    // add clone check if present in API response
+    const clone = (currentResults && currentResults.website_clone_check) ? currentResults.website_clone_check : null;
+    if (clone && clone.available) {
+        items.unshift(
+            { label: "CLONE SIMILARITY", value: `${Math.round((clone.similarity || 0) * 100)}%`, flag: clone.likely_clone },
+            { label: "OFFICIAL HOST", value: clone.reference_host || "—" },
+        );
+    }
+
+    // add external threat feeds summary if present
+    const feeds = (currentResults && currentResults.external_threat_feeds) ? currentResults.external_threat_feeds : null;
+    if (Array.isArray(feeds) && feeds.length) {
+        const flagged = feeds.filter(f => f && f.flagged).map(f => f.provider).join(", ");
+        const available = feeds.filter(f => f && (f.available || f.source === "disabled")).map(f => f.provider).join(", ");
+        items.unshift(
+            { label: "THREAT FEEDS", value: available || "—" },
+            { label: "FLAGGED BY", value: flagged || "None", flag: Boolean(flagged) },
+        );
+    }
+
+    grid.innerHTML = items.map(item => `
+    <div class="detail-item">
+      <div class="detail-item-label">${item.label}</div>
+      <div class="detail-item-value ${item.flag ? "text-high" : ""}">${escHtml(String(item.value))}</div>
+    </div>
+  `).join("");
 }
 
 function renderWhois(data) {
@@ -465,7 +545,10 @@ function renderBreakdown(breakdown) {
         brand_in_domain: "BRAND IN DOMAIN",
         near_match: "NEAR BRAND MATCH",
         domain_features: "DOMAIN FEATURES",
-        whois_signals: "WHOIS SIGNALS",
+        whois: "WHOIS SIGNALS",
+        dns: "DNS SIGNALS",
+        ssl: "SSL SIGNALS",
+        threat_intel: "THREAT INTEL",
     };
 
     const rows = Object.entries(breakdown)
@@ -557,7 +640,7 @@ function triggerAlert(data) {
     console.warn(
         `%c⚠ HIGH RISK DOMAIN DETECTED\n` +
         `Domain: ${data.domain}\n` +
-        `Score: ${data.risk_score}/100\n` +
+        `Score: ${(data.score ?? data.risk_score ?? "?")}/100\n` +
         `Attack: ${data.attack_type}\n` +
         `WHOIS: ${data.whois_flag}`,
         "color:#ff3d6e; font-size:14px; font-weight:bold;"
@@ -573,7 +656,7 @@ function triggerAlert(data) {
     banner.innerHTML = `
     <span class="alert-icon">⚠</span>
     <span>HIGH RISK ALERT — ${escHtml(data.domain)} — ${escHtml(data.attack_type)} DETECTED
-      (Score: ${data.risk_score}/100)</span>
+      (Score: ${(data.score ?? data.risk_score ?? "?")}/100)</span>
   `;
 
     const resultsPanel = document.getElementById("resultsPanel");
@@ -596,14 +679,14 @@ function startMonitorSimulation() {
             const res = await fetch(`${CONFIG.apiBase}/analyze-domain`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ domain }),
+                body: JSON.stringify({ domain, inspect_website: false }),
                 signal: AbortSignal.timeout(5000),
             });
             if (res.ok) {
                 const data = await res.json();
                 if ((data.hybrid_risk_level || data.risk_level) === "High") {
                     console.info(
-                        `%c[MONITOR] ${domain} → ${data.risk_level} (${data.risk_score}/100) — ${data.attack_type}`,
+                        `%c[MONITOR] ${domain} → ${data.risk_level} (${(data.score ?? data.risk_score ?? "?")}/100) — ${data.attack_type}`,
                         "color:#ffd166;"
                     );
                 }
@@ -662,6 +745,7 @@ function escHtml(str) {
 
 function riskToColor(level) {
     switch (level) {
+        case "Critical": return "var(--red)";
         case "High": return "var(--red)";
         case "Medium": return "var(--yellow)";
         default: return "var(--green)";
@@ -670,13 +754,11 @@ function riskToColor(level) {
 
 function riskToGlow(level) {
     switch (level) {
+        case "Critical": return "red";
         case "High": return "red";
         case "Medium": return "yellow";
         default: return "green";
     }
-}
-if ((data.hybrid_score || data.risk_score) >= 50) {
-    triggerHighAlert(data);
 }
 function triggerHighAlert(data) {
     // 🔊 Play sound
@@ -694,7 +776,7 @@ function triggerHighAlert(data) {
         <div class="alert-content">
             🚨 HIGH RISK DOMAIN DETECTED 🚨<br><br>
             Domain: <b>${data.domain}</b><br>
-            Score: <b>${data.hybrid_score || data.risk_score}%</b><br>
+            Score: <b>${(data.score ?? data.risk_score ?? "?")}%</b><br>
             Type: <b>${data.attack_type}</b><br><br>
             ⚠ POSSIBLE PHISHING ATTACK ⚠
         </div>
