@@ -666,10 +666,13 @@ def detect_typosquatting(domain_name: str) -> Dict[str, Any]:
             "edit_distance": 999,
         }
 
-    detected = (
-        best["combined_score"] >= 0.84 and best["edit_distance"] <= 3
-    ) or (
-        best["jaro_winkler_score"] >= 0.90 and best["edit_distance"] <= 2
+    exact_brand = best["edit_distance"] == 0 and label == _skeletonize(str(best["brand"]))
+    detected = not exact_brand and (
+        (
+            best["combined_score"] >= 0.84 and best["edit_distance"] <= 3
+        ) or (
+            best["jaro_winkler_score"] >= 0.90 and best["edit_distance"] <= 2
+        )
     )
     reason = "Strong brand lookalike" if detected else "No strong near-brand signal"
     return {
@@ -711,7 +714,10 @@ def detect_homoglyphs(label: str) -> Dict[str, Any]:
 
 def detect_combosquatting(domain_name: str) -> Dict[str, Any]:
     raw = _safe_lower(domain_name)
-    sk = _skeletonize(raw)
+    host = sanitize_domain(raw)
+    parts = host.split(".")
+    registered_label = parts[-2] if len(parts) >= 2 else host
+    sk = _skeletonize(registered_label)
     matched_brands = sorted([b for b in CONFIG.brands if _skeletonize(b) in sk and sk != _skeletonize(b)])
     matched_keywords = sorted([k for k in CONFIG.keywords if _skeletonize(k) in sk])
     fusion = []

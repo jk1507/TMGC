@@ -47,6 +47,7 @@ try:
         detect_typosquatting as utils_detect_typosquatting,
         detect_homoglyphs as utils_detect_homoglyphs,
         detect_combosquatting as utils_detect_combosquatting,
+        inspect_website,
         normalize_homoglyphs,
     )
 except ImportError:
@@ -54,6 +55,7 @@ except ImportError:
     utils_detect_typosquatting = None
     utils_detect_homoglyphs = None
     utils_detect_combosquatting = None
+    inspect_website = None
     normalize_homoglyphs = None
 
 # ------------------------------------------------------------------------------
@@ -450,9 +452,29 @@ IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 HEADER_NAMES = [
     "Strict-Transport-Security",
     "Content-Security-Policy",
+    "Content-Security-Policy-Report-Only",
     "X-Frame-Options",
     "X-XSS-Protection",
+    "X-Content-Type-Options",
+    "Referrer-Policy",
+    "Permissions-Policy",
+    "Cross-Origin-Embedder-Policy",
+    "Cross-Origin-Opener-Policy",
+    "Cross-Origin-Resource-Policy",
 ]
+OPTIONAL_HEADER_NAMES = {
+    "Permissions-Policy",
+    "Cross-Origin-Embedder-Policy",
+    "Cross-Origin-Opener-Policy",
+    "Cross-Origin-Resource-Policy",
+}
+HEADER_SCORE_WEIGHTS = {
+    "Strict-Transport-Security": 4,
+    "Content-Security-Policy": 5,
+    "X-Frame-Options": 3,
+    "X-Content-Type-Options": 2,
+    "Referrer-Policy": 1,
+}
 COMMON_PORTS = [21, 22, 23, 80, 443, 445, 3389, 5900, 8080, 8443]
 SUSPICIOUS_TLDS = {".top", ".xyz", ".click", ".work", ".live", ".loan", ".cc", ".tk", ".gq", ".ml"}
 KNOWN_BRANDS = [
@@ -474,6 +496,10 @@ KNOWN_BRANDS = [
     "phonepe",
     "paytm",
 ]
+TRUSTED_INFRA_KEYWORDS = {
+    "google", "youtube", "microsoft", "azure", "github", "amazon", "aws", "cloudflare",
+    "facebook", "meta", "instagram", "apple", "netflix", "openai", "paypal", "stripe",
+}
 PORT_INTEL = {
     22: "SSH exposed - increases administrative attack surface.",
     23: "Telnet exposed - plaintext remote administration risk.",
@@ -503,6 +529,13 @@ class HeaderStatus(BaseModel):
     name: str
     enabled: bool
     value: str | None = None
+    status: str = "MISSING"
+    strength: str = "MISSING"
+    effective: bool = False
+    evidence: str = ""
+    recommendation: str = ""
+    redirect_index: int | None = None
+    source_url: str | None = None
 
 
 class AnalyzeResponse(BaseModel):
@@ -532,6 +565,9 @@ class AnalyzeResponse(BaseModel):
     final_http_status: int | None = None
     port_map: str = ""
     ai_markdown_report: str = ""
+    ml_result: dict[str, Any] = Field(default_factory=dict)
+    score_components: dict[str, Any] = Field(default_factory=dict)
+    website_analysis: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass
@@ -652,6 +688,107 @@ Possible fixes:
         "formatted_report": ai_text
     }
 
+
+def score_security_headers(headers: dict[str, Any] | list[HeaderStatus]) -> tuple[int, list[str]]:
+    details = headers if isinstance(headers, list) else [
+        HeaderStatus(name=name, enabled=bool(enabled), effective=bool(enabled), status="STRONG" if enabled else "MISSING", strength="STRONG" if enabled else "MISSING")
+        for name, enabled in headers.items()
+    ]
+    score = 0
+    reasons: list[str] = []
+    for header in details:
+        if header.name in OPTIONAL_HEADER_NAMES:
+            continue
+        weight = HEADER_SCORE_WEIGHTS.get(header.name, 0)
+        if header.status == "MISSING":
+            score += weight
+            reasons.append(f"SECURITY HEADER: {header.name} is missing ({header.recommendation or 'review header posture'}).")
+        elif header.status in {"WEAK", "MISCONFIGURED"}:
+            score += max(1, weight // 2)
+            reasons.append(f"SECURITY HEADER: {header.name} is {header.status.lower()} ({header.evidence}).")
+        elif header.status == "REPORT_ONLY" and header.name == "Content-Security-Policy":
+            score += 2
+            reasons.append("SECURITY HEADER: CSP is report-only and does not enforce browser controls.")
+    return clamp_score(score), reasons
+
+
+def classify_score(score: int) -> str:
+    return "HIGH RISK" if score >= 60 else "SUSPICIOUS" if score >= 30 else "SAFE"
+
+
+def combine_analysis_scores(
+    heuristic_score: int,
+    header_score: int,
+    ai_score: int | None,
+    xgb_res: dict[str, Any],
+) -> tuple[int, dict[str, Any], list[str]]:
+    xgb_available = bool(xgb_res.get("xgb_available"))
+    xgb_score = float(xgb_res.get("xgb_score", 0.0) or 0.0) if xgb_available else None
+    xgb_verdict = str(xgb_res.get("xgb_verdict", "") or "").lower()
+
+    combined = float(heuristic_score)
+    combined += min(header_score * 0.8, 16)
+
+    # ML is a supporting signal. A "legitimate" ML verdict should not erase
+    # concrete WHOIS/HTTP/header/SSL evidence gathered during the live probe.
+    if xgb_available and xgb_score is not None:
+        if xgb_verdict == "phishing":
+            combined += min(xgb_score * 0.18, 18)
+        elif xgb_verdict == "suspicious":
+            combined += min(xgb_score * 0.12, 12)
+        elif xgb_verdict == "legitimate":
+            if heuristic_score < 15 and header_score < 8:
+                combined -= min((100 - xgb_score) * 0.04, 5)
+            elif heuristic_score < 25:
+                combined -= min((100 - xgb_score) * 0.02, 3)
+
+    # AI is confidence-only. Low AI/fallback scores do not subtract from live evidence.
+    if ai_score is not None:
+        if ai_score >= 80:
+            combined += 6
+        elif ai_score >= 60:
+            combined += 3
+
+    floor_reasons: list[str] = []
+
+# Only extreme evidence should force high-risk
+    strong_signals = 0
+
+    if xgb_available and xgb_verdict == "phishing" and (xgb_score or 0) >= 80:
+        strong_signals += 1
+
+    if ai_score is not None and ai_score >= 85:
+        strong_signals += 1
+
+    if heuristic_score >= 75:
+        strong_signals += 1
+
+    # Require multiple indicators before forcing high-risk
+    if strong_signals >= 2:
+        combined = max(combined, 75.0)
+        floor_reasons.append(
+            "MULTI-SIGNAL RISK: Multiple independent engines detected high-risk behavior."
+        )
+
+    final_score = clamp_score(round(combined))
+    if xgb_available and xgb_verdict == "legitimate" and (xgb_score or 0) <= 30 and heuristic_score < 15 and header_score < 8:
+        final_score = min(final_score, 29)
+        floor_reasons.append("FALSE POSITIVE GUARD: ML profile is legitimate and only weak evidence was observed; score capped below suspicious.")
+    components = {
+        "heuristic_analysis": heuristic_score,
+        "security_headers": header_score,
+        "xgboost_ml": xgb_score,
+        "ai_analysis": ai_score,
+        "signal_strength": {
+    "heuristic_analysis": "PRIMARY",
+    "security_headers": "SUPPORTING",
+    "xgboost_ml": "SUPPORTING",
+    "ai_analysis": "CONFIDENCE BOOST",
+},
+        "final_score": final_score,
+    }
+    return final_score, components, floor_reasons
+
 async def run_analysis(raw_target: str) -> AnalyzeResponse:
     domain = clean_domain(raw_target)
     if not DOMAIN_RE.match(domain):
@@ -700,7 +837,7 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
     parsed_domain = parse_domain_whois(domain_whois.stdout)
     ssl_data = parse_ssl(ssl_result.stdout or ssl_result.stderr or ssl_result.error or "")
     header_details = parse_headers(curl_result.stdout)
-    header_map = {header.name: header.enabled for header in header_details}
+    header_map = {header.name: header.effective for header in header_details}
     http_status = parse_final_status(curl_result.stdout)
     open_ports = parse_open_ports(nc_result.stdout or nc_result.stderr)
     raw_logs = {
@@ -728,6 +865,12 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
         "ssl_issuer": ssl_data["issuer"] or "N/A",
         "registrar": parsed_domain.registrar or "N/A",
     }
+    website_result = {}
+    if inspect_website:
+        try:
+            website_result = await asyncio.to_thread(inspect_website, f"https://{domain}", 5.0)
+        except Exception as exc:
+            website_result = {"available": False, "source": "error", "error": str(exc)}
 
     findings, heuristic_score = analyze_threat_intel(
         domain=domain,
@@ -739,10 +882,14 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
         raw_logs=raw_logs,
         ssl_status=ssl_result.status,
         http_status=http_status,
+        website_result=website_result,
     )
     commands = {result.name: result for result in [dns_a, dns_mx, ip_whois, domain_whois, ssl_result, curl_result, nc_result, ping_result]}
-    raw_context = build_context(domain, primary_ip, parsed_meta, header_map, open_ports, dns_data, findings, commands)
+    raw_context = build_context(domain, primary_ip, parsed_meta, header_map, open_ports, dns_data, findings, commands, website_result)
     ai_report, ai_score = await run_ai_core(raw_context, findings, heuristic_score)
+    header_score, header_findings = score_security_headers(header_details)
+    for finding in header_findings:
+        add_finding(findings, finding)
     
     # Run XGBoost ML prediction
     xgb_res = {"xgb_available": False}
@@ -751,20 +898,27 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
     except Exception as e:
         print("ML prediction execution failed:", e)
 
-    # Combine Heuristic and ML scores (60/40)
+    risk_score, score_components, floor_findings = combine_analysis_scores(
+        heuristic_score=heuristic_score,
+        header_score=header_score,
+        ai_score=ai_score,
+        xgb_res=xgb_res,
+    )
+    for finding in floor_findings:
+        add_finding(findings, finding)
+
     if xgb_res.get("xgb_available"):
         xgb_score = xgb_res.get("xgb_score", 0.0)
-        risk_score = clamp_score(round((heuristic_score * 0.6) + (xgb_score * 0.4)))
         verdict = xgb_res.get("xgb_verdict", "N/A")
-        findings.append(f"ML ANALYSIS: XGBoost flags domain as {verdict.upper()} (score: {xgb_score}/100)")
+        add_finding(findings, f"ML ANALYSIS: XGBoost flags domain as {verdict.upper()} (score: {xgb_score}/100)")
     else:
-        risk_score = clamp_score(max(heuristic_score, ai_score if ai_score is not None else heuristic_score))
+        add_finding(findings, "ML ANALYSIS: XGBoost model unavailable; score used rules, security headers, and AI analysis.")
 
     # Append ML results to the AI markdown report
     if xgb_res.get("xgb_available"):
         xgb_score = xgb_res.get("xgb_score", 0.0)
         verdict = xgb_res.get("xgb_verdict", "N/A")
-        severity = "HIGH RISK" if risk_score >= 60 else "MEDIUM RISK" if risk_score >= 30 else "LOW RISK"
+        severity = classify_score(risk_score)
         
         ml_banner = f"""# RETRO_INTEL Hybrid Threat Report: {domain}
 
@@ -774,8 +928,8 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
 ## Machine Learning Classifier (XGBoost)
 - **Verdict**: {verdict.upper()}
 - **Model Score**: {xgb_score}/100
-- **Weight**: 40% of the hybrid risk assessment
 - **Status**: ACTIVE
+- **Final Hybrid Score**: {risk_score}/100
 
 ---
 
@@ -783,6 +937,7 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
         ai_report_hybrid = ml_banner + ai_report
     else:
         ai_report_hybrid = ai_report
+    score_components["classification"] = classify_score(risk_score)
 
     errors = [
         result.error or result.stderr
@@ -817,6 +972,9 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
         final_http_status=http_status,
         port_map=raw_logs["nc"],
         ai_markdown_report=ai_report_hybrid,
+        ml_result=xgb_res,
+        score_components=score_components,
+        website_analysis=website_result,
     )
 
 
@@ -1064,13 +1222,179 @@ def parse_final_status(stdout: str) -> int | None:
     return int(statuses[-1]) if statuses else None
 
 
+def parse_header_blocks(stdout: str) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    redirect_index = -1
+
+    for raw_line in (stdout or "").splitlines():
+        line = raw_line.rstrip("\r")
+        status_match = re.match(r"^HTTP/\S+\s+(\d{3})", line, flags=re.IGNORECASE)
+        if status_match:
+            if current:
+                blocks.append(current)
+            redirect_index += 1
+            current = {
+                "status_code": int(status_match.group(1)),
+                "headers": {},
+                "url": None,
+                "redirect_index": redirect_index,
+            }
+            continue
+        if current is None or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        header_key = key.strip().lower()
+        header_value = value.strip()
+        if not header_key:
+            continue
+        current["headers"].setdefault(header_key, []).append(header_value)
+        if header_key == "location":
+            current["url"] = header_value
+
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def _values_for(blocks: list[dict[str, Any]], header_name: str) -> list[tuple[int, str | None, str]]:
+    key = header_name.lower()
+    values: list[tuple[int, str | None, str]] = []
+    for block in blocks:
+        for value in block.get("headers", {}).get(key, []):
+            values.append((int(block.get("redirect_index", 0)), block.get("url"), value))
+    return values
+
+
+def _source_from(values: list[tuple[int, str | None, str]]) -> tuple[int | None, str | None, str | None]:
+    if not values:
+        return None, None, None
+    redirect_index, source_url, value = values[-1]
+    return redirect_index, source_url, value
+
+
+def classify_header(name: str, values: list[tuple[int, str | None, str]], report_only_values: list[tuple[int, str | None, str]] | None = None) -> HeaderStatus:
+    report_only_values = report_only_values or []
+    redirect_index, source_url, value = _source_from(values)
+    evidence = ""
+    recommendation = ""
+    status = "MISSING"
+    effective = False
+
+    if name == "Strict-Transport-Security":
+        if value:
+            max_age_match = re.search(r"max-age\s*=\s*(\d+)", value, flags=re.IGNORECASE)
+            max_age = int(max_age_match.group(1)) if max_age_match else 0
+            if max_age >= 15_552_000:
+                status, effective = "STRONG", True
+                evidence = f"HSTS max-age={max_age}"
+            elif max_age > 0:
+                status, effective = "WEAK", True
+                evidence = f"HSTS max-age={max_age} is below 180 days"
+            else:
+                status = "MISCONFIGURED"
+                evidence = "HSTS present without valid max-age"
+            recommendation = "Use max-age of at least 15552000; includeSubDomains/preload when operationally safe."
+        else:
+            recommendation = "Add HSTS on HTTPS responses after validating subdomain readiness."
+
+    elif name == "Content-Security-Policy":
+        ro_index, ro_url, ro_value = _source_from(report_only_values)
+        if value:
+            low = value.lower()
+            if "default-src" in low and ("'unsafe-inline'" not in low or "script-src" in low):
+                status, effective = "STRONG", True
+                evidence = "Enforced CSP contains baseline source restrictions"
+            else:
+                status, effective = "WEAK", True
+                evidence = "Enforced CSP exists but appears permissive"
+            recommendation = "Keep CSP enforced; avoid unsafe-inline/unsafe-eval and define script/object/base-uri policies."
+        elif ro_value:
+            status = "REPORT_ONLY"
+            redirect_index, source_url, value = ro_index, ro_url, ro_value
+            evidence = "CSP is report-only; browser enforcement is not active"
+            recommendation = "Move validated report-only policy to enforced Content-Security-Policy."
+        else:
+            recommendation = "Add an enforced CSP appropriate to the application."
+
+    elif name == "Content-Security-Policy-Report-Only":
+        if value:
+            status = "REPORT_ONLY"
+            evidence = "Report-only CSP telemetry header present"
+            recommendation = "Use report-only for rollout telemetry, not as a substitute for enforced CSP."
+        else:
+            status = "OPTIONAL"
+            recommendation = "Optional: add report-only CSP while tuning a future enforced policy."
+
+    elif name == "X-Frame-Options":
+        if value and value.upper() in {"DENY", "SAMEORIGIN"}:
+            status, effective = "STRONG", True
+            evidence = f"X-Frame-Options={value.upper()}"
+            recommendation = "Keep DENY/SAMEORIGIN or enforce frame-ancestors in CSP."
+        elif value:
+            status = "MISCONFIGURED"
+            evidence = f"Unsupported X-Frame-Options value: {value}"
+            recommendation = "Use DENY or SAMEORIGIN, or use CSP frame-ancestors."
+        else:
+            recommendation = "Add X-Frame-Options or CSP frame-ancestors for clickjacking defense."
+
+    elif name == "X-XSS-Protection":
+        if value:
+            status = "DEPRECATED"
+            evidence = "Legacy browser XSS filter header is present"
+        else:
+            status = "DEPRECATED"
+            evidence = "Header is deprecated and absence is not a modern security failure"
+        recommendation = "Rely on CSP and output encoding; do not use this as a positive security signal."
+
+    elif name == "X-Content-Type-Options":
+        if value and value.lower() == "nosniff":
+            status, effective = "STRONG", True
+            evidence = "nosniff prevents MIME type confusion"
+        elif value:
+            status = "MISCONFIGURED"
+            evidence = f"Unexpected value: {value}"
+        recommendation = "Set X-Content-Type-Options: nosniff."
+
+    elif name == "Referrer-Policy":
+        strong = {"no-referrer", "same-origin", "strict-origin", "strict-origin-when-cross-origin"}
+        if value and value.lower() in strong:
+            status, effective = "STRONG", True
+            evidence = f"Referrer-Policy={value}"
+        elif value:
+            status, effective = "WEAK", True
+            evidence = f"Permissive referrer policy: {value}"
+        recommendation = "Prefer strict-origin-when-cross-origin or stricter."
+
+    elif name in OPTIONAL_HEADER_NAMES:
+        if value:
+            status, effective = "STRONG", True
+            evidence = f"{name} present"
+        else:
+            status = "OPTIONAL"
+            evidence = "Context-dependent isolation/privacy header not observed"
+        recommendation = "Optional for many sites; enable when isolation or policy control is required."
+
+    return HeaderStatus(
+        name=name,
+        enabled=effective,
+        effective=effective,
+        status=status,
+        strength=status,
+        value=value,
+        evidence=evidence or ("Header present" if value else "Header not observed"),
+        recommendation=recommendation,
+        redirect_index=redirect_index,
+        source_url=source_url,
+    )
+
+
 def parse_headers(stdout: str) -> list[HeaderStatus]:
-    lower_lines: dict[str, str] = {}
-    for line in (stdout or "").splitlines():
-        if ":" in line:
-            key, value = line.split(":", 1)
-            lower_lines[key.strip().lower()] = value.strip()
-    return [HeaderStatus(name=name, enabled=name.lower() in lower_lines, value=lower_lines.get(name.lower())) for name in HEADER_NAMES]
+    blocks = parse_header_blocks(stdout)
+    return [
+        classify_header(name, _values_for(blocks, name), _values_for(blocks, "Content-Security-Policy-Report-Only"))
+        for name in HEADER_NAMES
+    ]
 
 
 def parse_open_ports(stdout: str) -> list[int]:
@@ -1100,11 +1424,14 @@ def analyze_threat_intel(
     raw_logs: dict[str, str],
     ssl_status: str,
     http_status: int | None,
+    website_result: dict[str, Any] | None = None,
 ) -> tuple[list[str], int]:
     findings: list[str] = []
     score = 0
     created_date = parsed_meta.get("created_date")
     age_days = domain_age_days(created_date if created_date != "N/A" else None)
+    trusted_infra = is_trusted_infrastructure(domain, parsed_meta, age_days)
+    website_result = website_result or {}
 
     if age_days is not None and age_days < 90:
         add_finding(findings, "HIGH RISK: Recently registered domain - frequently associated with phishing, malware delivery, scams, or disposable infrastructure.")
@@ -1115,6 +1442,20 @@ def analyze_threat_intel(
     elif age_days is not None and age_days > 1825:
         add_finding(findings, "LOW RISK: Long-established infrastructure reduces probability of throwaway malicious usage. This does not guarantee safety.")
         score -= 4
+    elif age_days is None and not trusted_infra:
+        add_finding(findings, "MEDIUM RISK: Domain creation date was unavailable, reducing WHOIS confidence.")
+        score += 5
+
+    if not trusted_infra:
+        if parsed_meta.get("asn") in {None, "", "N/A"}:
+            add_finding(findings, "MEDIUM RISK: ASN was unavailable from IP WHOIS, reducing infrastructure attribution confidence.")
+            score += 4
+        if parsed_meta.get("country") in {None, "", "N/A", "UN"}:
+            add_finding(findings, "LOW RISK: Country/region was unavailable from IP WHOIS.")
+            score += 2
+        if parsed_meta.get("registrar") in {None, "", "N/A"}:
+            add_finding(findings, "LOW RISK: Registrar was unavailable from domain WHOIS.")
+            score += 2
 
     typo = detect_typosquatting(domain)
     if typo:
@@ -1126,39 +1467,122 @@ def analyze_threat_intel(
         score += 8
 
     if not dns_data.get("mx_records"):
-        add_finding(findings, "No MX records found.")
-        score += 6
+        if trusted_infra:
+            add_finding(findings, "INFO: No MX records found; suppressed as weak evidence for mature/trusted infrastructure.")
+        else:
+            add_finding(findings, "LOW RISK: No MX records found; weak signal only unless paired with phishing evidence.")
+            score += 2
     suspicious_ns = [ns for ns in dns_data.get("nameservers", []) if any(term in ns for term in ["parking", "sedoparking", "bodis", "cashparking"])]
     if suspicious_ns:
         add_finding(findings, f"SUSPICIOUS: Parked-domain nameserver pattern detected: {', '.join(suspicious_ns)}.")
         score += 10
-    if primary_ip is None or ping_dead(raw_logs.get("ping", "")):
-        add_finding(findings, "DEAD HOST: Dead-host condition detected or infrastructure blocks basic reachability checks.")
-        score += 18
-    if ssl_status not in {"ok", "skipped"} or parsed_meta.get("ssl_issuer") == "N/A":
-        add_finding(findings, "SSL: No SSL certificate available or OpenSSL handshake failed.")
-        score += 10
-    if http_status is None or http_status >= 400:
-        add_finding(findings, "HTTP failure detected during webserver behavior probe.")
+    if primary_ip is None:
+        add_finding(findings, "MEDIUM RISK: Domain did not resolve to IPv4 during analysis.")
         score += 8
+    elif ping_dead(raw_logs.get("ping", "")):
+        if trusted_infra:
+            add_finding(findings, "INFO: ICMP ping blocked; suppressed because many trusted/CDN environments block ping.")
+        else:
+            add_finding(findings, "LOW RISK: ICMP ping blocked or unreachable; weak infrastructure signal.")
+            score += 2
+    if ssl_status not in {"ok", "skipped"} or parsed_meta.get("ssl_issuer") == "N/A":
+        add_finding(findings, "SSL: No SSL certificate available or TLS handshake failed.")
+        score += 4 if trusted_infra else 8
+    if http_status is None or http_status >= 400:
+        if trusted_infra:
+            add_finding(findings, "INFO: HTTP probe failed or returned an error; suppressed as weak CDN/edge behavior.")
+        else:
+            add_finding(findings, "LOW RISK: HTTP probe failed or returned an error; requires context.")
+            score += 3
 
     for port in open_ports:
         if port in PORT_INTEL:
             add_finding(findings, f"EXPOSED PORT: {PORT_INTEL[port]}")
             score += 8 if port in {23, 3389, 445, 5900} else 5
 
-    if not security_headers.get("Content-Security-Policy", False):
-        add_finding(findings, "MEDIUM RISK: Missing CSP increases XSS exploitation exposure.")
+    signals = website_result.get("signals") or {}
+    redirect_chain = website_result.get("redirect_chain") or []
+    if signals.get("has_password_input"):
+        add_finding(findings, "HIGH RISK: Credential collection surface detected (password input present).")
+        score += 12
+    if signals.get("has_otp_keywords"):
+        add_finding(findings, "HIGH RISK: OTP or one-time-code wording detected; common in credential harvesting flows.")
+        score += 8
+    if signals.get("external_form_actions"):
+        add_finding(findings, "HIGH RISK: Login/form submission posts to an external host.")
+        score += 18
+    if len(redirect_chain) >= 3:
+        add_finding(findings, "MEDIUM RISK: Multi-hop redirect chain observed during website inspection.")
         score += 6
-    if not security_headers.get("X-Frame-Options", False):
-        add_finding(findings, "MEDIUM RISK: Clickjacking protection absent.")
-        score += 5
-    if not security_headers.get("X-XSS-Protection", False):
-        add_finding(findings, "LOW RISK: Legacy browser XSS mitigation unavailable.")
-        score += 2
-    if security_headers.get("Strict-Transport-Security", False):
-        add_finding(findings, "SAFE: HTTPS enforcement detected via HSTS.")
-        score -= 3
+    if signals.get("has_password_input") and detect_typosquatting(domain):
+        add_finding(findings, "HIGH RISK: Brand-lookalike domain also presents a credential form.")
+        score += 20
+
+  # Security header analysis
+# Only evaluate headers if website responded successfully
+
+    if http_status and http_status < 400:
+
+        # HSTS (important)
+        hsts_value = raw_logs.get("curl", "").lower()
+
+        if security_headers.get("Strict-Transport-Security", False):
+
+            hsts_match = re.search(r"max-age=(\d+)", hsts_value)
+
+            if hsts_match and int(hsts_match.group(1)) >= 15552000:
+                add_finding(
+                    findings,
+                    "SAFE: Strong HSTS policy detected (1 year HTTPS enforcement)."
+                )
+                score -= 2
+
+            else:
+                add_finding(
+                    findings,
+                    "LOW RISK: Weak HSTS configuration detected."
+                )
+                score += 1
+
+        else:
+            add_finding(
+                findings,
+                "LOW RISK: HSTS missing. HTTPS downgrade protection unavailable."
+            )
+            score += 2
+
+        # CSP
+        if security_headers.get("Content-Security-Policy", False):
+            add_finding(
+                findings,
+                "SAFE: CSP present. Script injection protections enabled."
+            )
+            score -= 1
+
+        else:
+            add_finding(
+                findings,
+                "LOW RISK: Missing CSP slightly increases XSS exposure."
+            )
+            score += 2
+
+        # X-Frame-Options
+        if security_headers.get("X-Frame-Options", False):
+            add_finding(
+                findings,
+                "SAFE: Clickjacking protection enabled."
+            )
+        else:
+            add_finding(
+                findings,
+                "LOW RISK: Missing clickjacking protection."
+            )
+            score += 1
+
+        add_finding(
+            findings,
+            "INFO: X-XSS-Protection is deprecated and excluded from positive/negative risk scoring."
+        )
 
     if not findings:
         add_finding(findings, "SAFE: No high-confidence adverse indicator was observed in the collected command evidence.")
@@ -1168,6 +1592,22 @@ def analyze_threat_intel(
 def add_finding(findings: list[str], finding: str) -> None:
     if finding not in findings:
         findings.append(finding)
+
+
+def is_trusted_infrastructure(domain: str, parsed_meta: dict[str, Any], age_days: int | None) -> bool:
+    text = " ".join(
+        str(v).lower()
+        for v in [
+            domain,
+            parsed_meta.get("hosting_space"),
+            parsed_meta.get("registrar"),
+            parsed_meta.get("ssl_issuer"),
+            parsed_meta.get("asn"),
+        ]
+        if v
+    )
+    mature = age_days is None or age_days >= 365
+    return mature and any(keyword in text for keyword in TRUSTED_INFRA_KEYWORDS)
 
 
 def domain_age_days(created_iso: str | None) -> int | None:
@@ -1187,14 +1627,69 @@ def ping_dead(stdout: str) -> bool:
 
 def detect_typosquatting(domain: str) -> str | None:
     label = domain.split(".", 1)[0].lower()
-    normalized = label.translate(str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})).replace("-", "")
+
+    normalized = (
+        label.translate(
+            str.maketrans({
+                "0": "o",
+                "1": "l",
+                "3": "e",
+                "4": "a",
+                "5": "s",
+                "7": "t",
+                "@": "a",
+                "$": "s",
+            })
+        )
+        .replace("-", "")
+    )
+
     for brand in KNOWN_BRANDS:
+
+        # Homoglyph / substitution detection
         if normalized == brand and label != brand:
-            return f"The domain visually resembles {brand}.com through character substitution or hyphenation and may attempt credential theft."
-        if brand in normalized and normalized != brand:
-            return f"The domain embeds the brand string {brand} with extra login/support/security wording."
-        if levenshtein_distance(normalized, brand) == 1 and normalized != brand:
-            return f"The domain is one edit away from {brand}.com, consistent with missing/extra/swapped character impersonation."
+            return (
+                f"The domain visually resembles {brand}.com "
+                f"through character substitution or hyphenation "
+                f"and may attempt credential theft."
+            )
+
+        # Brand + suspicious keywords
+        if (
+            brand in normalized
+            and normalized != brand
+            and any(
+                keyword in normalized
+                for keyword in [
+                    "login",
+                    "signin",
+                    "verify",
+                    "secure",
+                    "account",
+                    "auth",
+                    "support",
+                    "update",
+                    "wallet",
+                    "pay",
+                ]
+            )
+        ):
+            return (
+                f"The domain embeds the brand string "
+                f"{brand} with extra login/support/security wording."
+            )
+
+        # One-character typo detection
+        if (
+            levenshtein_distance(normalized, brand) == 1
+            and normalized != brand
+        ):
+            return (
+                f"The domain is one edit away from "
+                f"{brand}.com, consistent with "
+                f"missing/extra/swapped character impersonation."
+            )
+
     return None
 
 
@@ -1223,6 +1718,7 @@ def build_context(
     dns_data: dict[str, list[str]],
     findings: list[str],
     commands: dict[str, CommandResult],
+    website_result: dict[str, Any] | None = None,
 ) -> str:
     blocks = [
         f"TARGET_DOMAIN: {domain}",
@@ -1231,6 +1727,7 @@ def build_context(
         f"SECURITY_HEADERS: {security_headers}",
         f"OPEN_PORTS: {open_ports}",
         f"DNS_DATA: {dns_data}",
+        f"WEBSITE_ANALYSIS: {website_result or {}}",
         "FINDINGS:\n" + "\n".join(f"- {finding}" for finding in findings),
     ]
     for name, result in commands.items():
@@ -1254,13 +1751,23 @@ async def run_ai_core(raw_context: str, findings: list[str], fallback_score: int
         return fallback_ai_report(findings, fallback_score), fallback_score
 
     prompt = f"""
-You are a Tier-3 SOC analyst. Evaluate this OSINT command matrix.
-Return a detailed markdown forensic report with:
-- severity
-- key findings
-- risk reasoning
-- threat explanation
-- concrete recommendations
+You are a Tier-3 SOC analyst and threat hunter. Evaluate this structured OSINT evidence.
+Return a concise markdown SOC report with these exact sections:
+1. Threat Summary
+2. Risk Assessment
+3. MITRE ATT&CK Mapping
+4. IOC Analysis
+5. False Positive Discussion
+6. Analyst Notes
+7. Confidence Score
+8. Recommended Action
+
+Reason from evidence only. Treat weak signals such as blocked ping, missing MX,
+deprecated X-XSS-Protection, report-only CSP, CDN edge behavior, and HTTP probe
+failures as low-confidence unless combined with stronger phishing evidence.
+Strong evidence includes brand impersonation, homoglyph abuse, recent
+registration, credential harvesting forms, external form posts, malicious feed
+hits, suspicious redirects, exposed risky services, and TLS/ownership mismatch.
 
 End with one final line:
 RISK_SCORE: <integer 0-100>
@@ -1285,7 +1792,7 @@ def extract_ai_score(text: str) -> int | None:
 
 
 def fallback_ai_report(findings: list[str], score: int) -> str:
-    severity = "HIGH RISK" if score >= 60 else "MEDIUM RISK" if score >= 30 else "LOW RISK"
+    severity = classify_score(score)
     finding_lines = "\n".join(f"- {finding}" for finding in findings)
     return f"""# RETRO_INTEL SOC Evaluation Log
 

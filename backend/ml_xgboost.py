@@ -2,7 +2,7 @@ import os
 import pickle
 import numpy as np
 
-MODEL_PATH = "xgb_model.pkl"
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xgb_model.pkl")
 
 def load_xgb():
     if os.path.exists(MODEL_PATH):
@@ -29,7 +29,7 @@ def train_xgb(X, y):
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(model, f)
 
-    print("✅ XGBoost trained and saved")
+    print("XGBoost trained and saved")
     return model
 
 
@@ -38,10 +38,10 @@ def predict_xgb(model, feature_vector):
         return {"xgb_available": False}
 
     vec = np.array(feature_vector).reshape(1, -1)
-    proba = model.predict_proba(vec)[0][1]
+    proba = float(model.predict_proba(vec)[0][1])
 
     return {
         "xgb_available": True,
         "xgb_score": round(proba * 100, 1),
-        "xgb_verdict": "Phishing" if proba > 0.5 else "Legitimate"
+        "xgb_verdict": "Phishing" if proba >= 0.5 else "Legitimate"
     }
