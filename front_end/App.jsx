@@ -1,10 +1,11 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
+import PremiumDashboard, { getTrustScore } from "./PremiumDashboard.jsx";
+import { RAW_TABS } from "./dashboardShared.jsx";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api/v1/analyze";
 const AI_ANALYSIS_API =
   import.meta.env.VITE_AI_ANALYSIS_API ||
   "http://127.0.0.1:8000/api/v1/ai-analysis";
-const RAW_TABS = ["dig", "mx", "ip_whois", "domain_whois", "ssl", "curl", "nc"];
 const KEYWORDS = [
   "CRITICAL",
   "HIGH RISK",
@@ -34,15 +35,22 @@ const pipelineLogs = [
   ">> STREAMING RAW MATRIX INTO AI CORE...",
 ];
 
-function Dot({ enabled }) {
-  return (
-    <span
-      className={`inline-block h-2.5 w-2.5 rounded-full ${
-        enabled ? "bg-green-400 shadow-[0_0_10px_rgba(74,222,128,0.9)]" : "animate-pulse bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]"
-      }`}
-    />
-  );
-}
+const NAV_ITEMS = [
+  { id: "dashboard", label: "Dashboard", icon: "grid" },
+  { id: "threat-analysis", label: "Threat Analysis", icon: "shield" },
+  { id: "domain-intelligence", label: "Domain Intelligence", icon: "globe" },
+  { id: "ip-network", label: "IP & Network", icon: "network" },
+  { id: "whois-lookup", label: "WHOIS Lookup", icon: "search" },
+  { id: "ssl-analysis", label: "SSL/TLS Analysis", icon: "lock" },
+  { id: "dns-records", label: "DNS Records", icon: "dns" },
+  { id: "content-analysis", label: "Content Analysis", icon: "file" },
+  { id: "reputation", label: "Reputation Lookup", icon: "star" },
+  { id: "reports", label: "Reports", icon: "report" },
+  { id: "saved-scans", label: "Saved Scans", icon: "bookmark" },
+  { id: "settings", label: "Settings", icon: "settings" },
+];
+
+const TMGC_VERSION = "v2.0.0 TMGC";
 
 function App() {
   const [target, setTarget] = useState("example.com");
@@ -52,8 +60,13 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("dig");
+  const [currentView, setCurrentView] = useState("dashboard");
   const [aiReport, setAiReport] = useState(null);
   const [loadingAI, setLoadingAI] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [scanMeta, setScanMeta] = useState({ startedAt: null, completedAt: null, durationMs: null });
+  const exportRef = useRef(null);
 
   const data = useMemo(() => normalizeResult(result), [result]);
   const highRisk = (data?.risk_score || 0) >= 60;
@@ -75,13 +88,33 @@ function App() {
     return <AuthScreen onAuthenticated={setUser} />;
   }
 
+  function scrollToSection(sectionId) {
+    setCurrentView(sectionId);
+    setSidebarOpen(false);
+    const node = document.getElementById(sectionId);
+    if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function shareReport() {
+    if (!data) return;
+    const summary = `TMGC Forensic Report — ${data.domain}\nRisk Score: ${data.risk_score}/100\nTrust Score: ${getTrustScore(data.risk_score)}/100`;
+    if (navigator.share) {
+      navigator.share({ title: "TMGC Forensic Report", text: summary, url: window.location.href }).catch(() => {});
+      return;
+    }
+    navigator.clipboard?.writeText(summary).catch(() => {});
+  }
+
   async function analyze() {
     const cleanTarget = target.trim();
     if (!cleanTarget) return;
 
+    const startedAt = Date.now();
     setLoading(true);
     setError("");
     setResult(null);
+    setAiReport(null);
+    setScanMeta({ startedAt, completedAt: null, durationMs: null });
     setLogs([`RETRO_INTEL SHELL > TARGET=${cleanTarget}`]);
 
     pipelineLogs.forEach((line, index) => {
@@ -114,6 +147,11 @@ function App() {
       setLogs((current) => [...current, `!! PIPELINE FAILURE: ${analysisError.message}`]);
     } finally {
       setLoading(false);
+      setScanMeta((current) => ({
+        ...current,
+        completedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+      }));
     }
   }
 
@@ -491,445 +529,43 @@ ${commands}
   }
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-black p-4 font-mono text-green-500">
-      <style>{`
-        @keyframes crt-flicker { 0%, 100% { opacity: .98; } 50% { opacity: .91; } }
-        .crt::before {
-          content: "";
-          pointer-events: none;
-          position: fixed;
-          inset: 0;
-          background: linear-gradient(rgba(18,16,16,0) 50%, rgba(0,255,0,.08) 50%), linear-gradient(90deg, rgba(255,0,0,.04), rgba(0,255,0,.02), rgba(0,0,255,.04));
-          background-size: 100% 4px, 6px 100%;
-          mix-blend-mode: screen;
-          z-index: 50;
-        }
-        .intel-keyword {
-          color: #f87171;
-          font-weight: 900;
-          text-shadow: 0 0 9px rgba(248,113,113,.75);
-        }
-        @media (max-width: 760px) {
-          .tmgc-shell { padding: 12px; }
-          .tmgc-panel { min-height: auto; }
-          .tmgc-actions { display: grid; grid-template-columns: 1fr; }
-          .tmgc-actions button { width: 100%; }
-          .tmgc-title { font-size: 1.35rem; line-height: 1.2; }
-        }
-      `}</style>
-
-      <div className="crt absolute inset-0 animate-[crt-flicker_2.4s_infinite]" />
-      <section className={`tmgc-shell relative z-10 mx-auto grid max-w-7xl gap-4 rounded border bg-black/90 p-4 ${accent} lg:grid-cols-[1.1fr_.9fr]`}>
-        <header className="col-span-full border-b border-green-700 pb-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs tracking-[0.35em] text-green-300">RETRO_INTEL // OSINT DOMAIN THREAT ANALYZER</p>
-              <h1 className="tmgc-title text-2xl font-black text-green-400 shadow-[0_0_10px_rgba(0,255,0,0.5)]">ROOT@SOC:~$ FORENSIC_PIPELINE</h1>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="border border-cyan-700 px-3 py-2 text-xs text-cyan-300">{user.email}</div>
-              <button className="border border-green-700 px-3 py-2 text-xs text-green-300 hover:bg-green-500 hover:text-black" onClick={() => { localStorage.removeItem("tmgc_user"); setUser(null); }}>
-                LOGOUT
-              </button>
-              <div
-  className={`border px-4 py-2 text-center ${
-    (data?.risk_score || 0) >= 60
-      ? "animate-pulse border-red-500 text-red-400"
-      : (data?.risk_score || 0) >= 30
-      ? "border-yellow-500 text-yellow-300"
-      : "border-green-600 text-green-300"
-  }`}
->
-  <div className="text-xs tracking-widest">
-    THREAT VERDICT
-  </div>
-
-  <div className="font-black text-sm">
-    {verdict}
-  </div>
-<div className="text-[10px] tracking-widest text-cyan-300 mt-1">
-  SOC CONFIDENCE::{
-    (data?.risk_score || 0) >= 85
-      ? "VERY HIGH"
-      : (data?.risk_score || 0) >= 60
-      ? "HIGH"
-      : (data?.risk_score || 0) >= 30
-      ? "MEDIUM"
-      : "LOW"
-  }
-</div>
-  <div className="mt-1 text-xs">
-    SCORE::{
-      data
-        ? data.risk_score
-            .toString()
-            .padStart(3, "0")
-        : "---"
-    }
-  </div>
-</div>
-            </div>
-          </div>
-        </header>
-
-        <section className="tmgc-panel min-h-[620px] rounded border border-green-800 bg-black p-4 shadow-[inset_0_0_28px_rgba(0,255,0,0.08)]">
-          <label className="block text-sm text-green-300">TARGET WEBSITE</label>
-          <div className="tmgc-actions mt-2 flex gap-2">
-            <input
-              className="w-full border border-green-700 bg-black px-3 py-3 text-green-300 outline-none shadow-[0_0_10px_rgba(0,255,0,0.18)] placeholder:text-green-900"
-              value={target}
-              onChange={(event) => setTarget(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && analyze()}
-              placeholder="https://www.gitam.edu/student/login.php"
-            />
-            <button
-              className="border border-green-500 px-4 py-3 font-bold text-green-300 hover:bg-green-500 hover:text-black disabled:opacity-50"
-              disabled={loading}
-              onClick={analyze}
-            >
-              {loading ? "RUNNING" : "ANALYZE"}
-            </button>
-           <button
-  className="border border-cyan-500 px-4 py-3 font-bold text-cyan-300 hover:bg-cyan-500 hover:text-black disabled:opacity-50"
-  disabled={loadingAI}
-  onClick={runAIAnalysis}
->
-  {loadingAI ? "AI_RUNNING" : "AI_ANALYSIS"}
-</button>
-          </div>
-
-          {error && <div className="mt-4 border border-red-500 p-3 text-red-400">!! {error}</div>}
-
-          <div className="mt-4 h-[470px] overflow-y-auto border border-green-900 bg-[#001100]/40 p-4 text-sm leading-7 text-green-400">
-            {logs.map((line, index) => (
-              <p key={`${line}-${index}`} className="drop-shadow-[0_0_6px_rgba(34,197,94,.6)]">
-                {line}
-              </p>
-            ))}
-          </div>
-        </section>
-
-        <aside className="rounded border border-green-800 bg-black p-4">
-          <h2
-  className={`border-b pb-2 text-lg font-bold ${
-    (data?.risk_score || 0) >= 60
-      ? "border-red-700 text-red-400"
-      : (data?.risk_score || 0) >= 30
-      ? "border-yellow-700 text-yellow-300"
-      : "border-green-800 text-green-400"
-  }`}
->
-  DATA MATRIX :: {verdict}
-</h2>
-          <div className="mt-4 grid gap-3 text-sm">
-            <Matrix label="TARGET IP" value={data?.ip_address || "N/A"} />
-            <Matrix label="HOSTING SPACE" value={data?.parsed_meta.hosting_space || "N/A"} />
-            <Matrix label="DOMAIN AGE" value={data?.parsed_meta.domain_age || "N/A"} />
-            <Matrix label="ASN / COUNTRY" value={`${data?.parsed_meta.asn || "N/A"} / ${data?.parsed_meta.country || "N/A"}`} />
-            <Matrix label="HTTP STATUS" value={data?.parsed_meta.http_status || "N/A"} />
-            <Matrix label="SSL ISSUER" value={data?.parsed_meta.ssl_issuer || "N/A"} />
-            <div
-  className={`border p-3 ${
-    (data?.risk_score || 0) >= 60
-      ? "border-red-900 bg-red-950/10"
-      : (data?.risk_score || 0) >= 30
-      ? "border-yellow-900 bg-yellow-950/10"
-      : "border-green-950 bg-green-950/10"
-  }`}
->
-  <span className="block text-xs text-green-700">
-    SCORE BREAKDOWN
-  </span>
-
-  <div className="mt-2 space-y-2 text-sm text-green-300">
-    <div className="flex justify-between">
-      <span>RAW EVIDENCE</span>
-      <strong>
-        {data?.score_components?.heuristic_analysis ?? "N/A"}
-      </strong>
-    </div>
-
-    <div className="flex justify-between">
-      <span>ML ENGINE</span>
-      <strong>
-        {data?.score_components?.xgboost_ml ?? "N/A"}
-      </strong>
-    </div>
-
-    <div className="flex justify-between">
-      <span>AI ANALYSIS</span>
-      <strong>
-        {data?.score_components?.ai_analysis ?? "UNAVAILABLE"}
-      </strong>
-    </div>
-
-    <div className="flex justify-between">
-      <span>SECURITY HEADERS</span>
-      <strong>
-        {data?.score_components?.security_headers ?? "N/A"}
-      </strong>
-    </div>
-
-    <div className="border-t border-green-900 pt-2 flex justify-between font-bold text-cyan-300">
-      <span>FINAL SCORE</span>
-      <span>
-        {data?.risk_score ?? "---"}/100
-      </span>
-    </div>
-  </div>
-</div>
-          </div>
-          <div
-  className={`mt-5 border p-4 ${
-    (data?.risk_score || 0) >= 60
-      ? "border-red-800 bg-red-950/10"
-      : (data?.risk_score || 0) >= 30
-      ? "border-yellow-800 bg-yellow-950/10"
-      : "border-green-800 bg-green-950/10"
-  }`}
->
-  <h3 className="font-bold mb-2">
-    THREAT SUMMARY
-  </h3>
-
-  <div className="text-sm space-y-2">
-    {(data?.risk_score || 0) >= 90 ? (
-      <>
-        <p className="text-red-400 font-bold">
-          ☠️ Critical phishing likelihood.
-        </p>
-        <p>
-          Multiple strong malicious indicators
-          were detected.
-        </p>
-      </>
-    ) : (data?.risk_score || 0) >= 60 ? (
-      <>
-        <p className="text-red-400 font-bold">
-          High-risk infrastructure.
-        </p>
-        <p>
-  {data?.findings?.[0] ||
-    "Suspicious indicators detected."}
-</p>
-      </>
-    ) : (data?.risk_score || 0) >= 30 ? (
-      <>
-        <p className="text-yellow-300 font-bold">
-          Suspicious indicators found.
-        </p>
-        <p>
-          Further manual investigation is
-          recommended.
-        </p>
-      </>
-    ) : (
-      <>
-        <p className="text-green-400 font-bold">
-          Safe / trusted profile.
-        </p>
-        <p>
-          No high-confidence malicious signals
-          detected.
-        </p>
-      </>
-    )}
-  </div>
-</div>
-<div className="mt-4 border border-cyan-900 p-4 bg-cyan-950/10">
-  <h3 className="mb-2 font-bold text-cyan-400">
-    RISK CONTRIBUTORS
-  </h3>
-
-  <div className="space-y-2 text-sm text-cyan-200">
-    {data?.findings?.length ? (
-      data.findings
-        .slice(0, 6)
-        .map((finding, index) => (
-          <div
-            key={index}
-            className="border-b border-cyan-950 pb-2"
-          >
-            {(
-  finding.includes("TYPOSQUATTING") ||
-  finding.includes("PHISHING") ||
-  finding.includes("MALWARE") ||
-  finding.includes("HIGH RISK")
-) ? (
-  <span className="text-red-400">
-    + HIGH IMPACT
-  </span>
-) : (
-  finding.includes("SSL") ||
-  finding.includes("DEAD HOST") ||
-  finding.includes("EXPOSED PORT") ||
-  finding.includes("MEDIUM RISK")
-) ? (
-  <span className="text-yellow-300">
-    + MEDIUM IMPACT
-  </span>
-) : (
-  <span className="text-green-400">
-    + LOW IMPACT
-  </span>
-)}
-            <p className="mt-1 text-xs">
-              {finding}
-            </p>
-          </div>
-        ))
-    ) : (
-      <p>No significant contributors.</p>
-    )}
-  </div>
-</div>
-          <h3 className="mt-5 border-b border-green-800 pb-2 font-bold">SECURITY HEADERS</h3>
-          <div className="mt-3 grid gap-2 text-sm">
-            {headerRows.map((header) => (
-              <div key={header.name} className="flex items-center justify-between gap-3 border border-green-950 p-2">
-                <span>{header.name}</span>
-                <span className="flex items-center gap-2 font-bold">
-                  <Dot enabled={header.effective ?? header.enabled} />
-                  <HeaderBadge header={header} />
-                </span>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-5 grid grid-cols-2 gap-2 text-xs">
-            <ExportButton disabled={!data} onClick={exportExcel} label="EXPORT_EXCEL_REPORT" />
-            <ExportButton disabled={!data} onClick={exportPdf} label="DOWNLOAD_PDF_DOSSIER" />
-            <ExportButton disabled={!data} onClick={exportRawTxt} label="RAW_TXT_LOG" />
-            <ExportButton disabled={!data} onClick={exportMarkdown} label="EXPORT_MD_LOG" />
-          </div>
-
-          <div className="mt-4 flex flex-wrap gap-2">
-            {RAW_TABS.map((tab) => (
-              <button
-                key={tab}
-                className={`border px-2 py-1 text-xs ${activeTab === tab ? "border-green-400 bg-green-500 text-black" : "border-green-900 text-green-400 hover:border-green-500"}`}
-                onClick={() => setActiveTab(tab)}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
-            <div className="mt-4 border border-green-900 p-4 min-h-[180px] bg-[#001100]/30">
-  <h3 className="mb-2 font-bold text-green-400">
-    RAW COMMAND OUTPUT :: {activeTab.toUpperCase()}
-  </h3>
-
-  <pre className="whitespace-pre-wrap text-xs text-green-300 overflow-auto max-h-[250px]">
-    {
-  data?.raw_logs?.[activeTab]
-    ? data.raw_logs[activeTab].slice(
-        0,
-        15000
-      )
-    : "NO DATA AVAILABLE"
-}
-  </pre>
-</div>
-<div className="mt-4 border border-yellow-900 p-4 min-h-[180px] bg-[#1a1a00]/30">
-  <h3 className="mb-2 font-bold text-yellow-400">
-    ML THREAT ANALYSIS
-  </h3>
-
-  {data?.ml_result?.xgb_available ? (
-    <div className="text-sm text-yellow-200 space-y-2">
-      <p>
-        <strong>MODEL:</strong> XGBoost
-      </p>
-
-      <p>
-        <strong>VERDICT:</strong>{" "}
-        {data.ml_result.xgb_verdict?.toUpperCase()}
-      </p>
-
-      <p>
-        <strong>ML SCORE:</strong>{" "}
-        {data.ml_result.xgb_score}/100
-      </p>
-
-      <p>
-        <strong>WHY THIS RESULT:</strong>
-      </p>
-
-      <ul className="list-disc ml-5 text-xs space-y-1">
-        {data.findings
-          ?.filter((x) => x.includes("ML ANALYSIS"))
-          .map((item, i) => (
-            <li key={i}>{item}</li>
-          ))}
-      </ul>
-    </div>
-  ) : (
-    <p className="text-yellow-300">
-      ML MODEL UNAVAILABLE
-    </p>
-  )}
-</div>
-    <div className="mt-4 border border-cyan-900 p-4 min-h-[180px]">
-  <h3 className="mb-2 font-bold text-cyan-400">
-    AI CYBER ANALYSIS
-  </h3>
-
-  {loadingAI ? (
-    <p>RUNNING AI THREAT REASONING...</p>
-  ) : aiReport ? (
-    <div className="text-sm text-cyan-200 whitespace-pre-wrap">
-      <HighlightedText
-        text={
-  aiReport.formatted_report ||
-  aiReport.analysis ||
-  aiReport.report ||
-  JSON.stringify(aiReport, null, 2)
-}
-      />
-    </div>
-  ) : (
-    <div className="text-sm text-cyan-300 space-y-2">
-  <p>
-    Click AI_ANALYSIS to perform deep
-    contextual cyber reasoning.
-  </p>
-
-  <p className="text-xs text-yellow-400">
-    ML engine and heuristic scoring are
-    still active even if AI analysis is
-    unavailable.
-  </p>
-</div>
-  )}
-</div>
-        </aside>
-      </section>
-    </main>
+    <PremiumDashboard
+      user={user}
+      target={target}
+      setTarget={setTarget}
+      logs={logs}
+      data={data}
+      loading={loading}
+      loadingAI={loadingAI}
+      error={error}
+      activeTab={activeTab}
+      setActiveTab={setActiveTab}
+      aiReport={aiReport}
+      currentView={currentView}
+      exportOpen={exportOpen}
+      setExportOpen={setExportOpen}
+      sidebarOpen={sidebarOpen}
+      setSidebarOpen={setSidebarOpen}
+      scanMeta={scanMeta}
+      headerRows={headerRows}
+      verdict={verdict}
+      accent={accent}
+      exportRef={exportRef}
+      analyze={analyze}
+      runAIAnalysis={runAIAnalysis}
+      exportExcel={exportExcel}
+      exportPdf={exportPdf}
+      exportRawTxt={exportRawTxt}
+      exportMarkdown={exportMarkdown}
+      shareReport={shareReport}
+      scrollToSection={scrollToSection}
+      setUser={setUser}
+      NAV_ITEMS={NAV_ITEMS}
+      TMGC_VERSION={TMGC_VERSION}
+    />
   );
 }
 
-function Matrix({ label, value }) {
-  return (
-    <div className="border border-green-950 p-3">
-      <span className="block text-xs text-green-700">{label}</span>
-      <strong className="break-words text-green-300">{value || "N/A"}</strong>
-    </div>
-  );
-}
-
-function HeaderBadge({ header }) {
-  const status = header.status || header.strength || (header.enabled ? "STRONG" : "MISSING");
-  const colors = {
-    STRONG: "text-green-400",
-    WEAK: "text-yellow-300",
-    MISCONFIGURED: "text-red-400",
-    REPORT_ONLY: "text-yellow-300",
-    DEPRECATED: "text-gray-300",
-    OPTIONAL: "text-cyan-300",
-    MISSING: "text-red-400",
-  };
-  return <span className={colors[status] || "text-green-300"}>{status.replace("_", " ")}</span>;
-}
 
 function AuthScreen({ onAuthenticated }) {
   const [mode, setMode] = useState("login");
@@ -956,28 +592,35 @@ function AuthScreen({ onAuthenticated }) {
   }
 
   return (
-    <main className="min-h-screen bg-[#070b10] px-4 py-8 font-mono text-cyan-100">
+    <main className="min-h-screen bg-[#030303] px-4 py-8 text-zinc-300">
       <section className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-5xl items-center justify-center">
-        <div className="grid w-full overflow-hidden rounded border border-cyan-900 bg-[#0b1118] shadow-[0_0_40px_rgba(0,217,255,0.12)] md:grid-cols-[0.9fr_1.1fr]">
-          <div className="border-b border-cyan-900 bg-[#091018] p-6 md:border-b-0 md:border-r">
-            <p className="text-xs tracking-[0.35em] text-cyan-400">TMGC ACCESS</p>
-            <h1 className="mt-3 text-3xl font-black text-white">Threat Intelligence Console</h1>
-            <p className="mt-4 text-sm leading-7 text-cyan-200/70">
+        <div className="grid w-full overflow-hidden rounded-2xl border border-green-900/40 bg-[#050505] shadow-[0_0_60px_rgba(34,197,94,.08)] md:grid-cols-[0.9fr_1.1fr]">
+          <div className="border-b border-green-900/30 bg-[#030303] p-6 md:border-b-0 md:border-r">
+            <div className="flex items-center gap-2">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-green-500/40 bg-green-500/10 text-lg font-black text-green-400">T</div>
+              <div>
+                <p className="text-lg font-extrabold text-green-400">TMGC</p>
+                <p className="text-[10px] font-semibold tracking-[0.2em] text-green-800">FORENSIC PIPELINE</p>
+              </div>
+            </div>
+            <h1 className="mt-6 text-3xl font-black text-white">Threat Intelligence Console</h1>
+            <p className="mt-4 text-sm leading-7 text-zinc-500">
               Sign in to run domain checks with security headers, XGBoost ML, and AI-assisted analysis in one score.
             </p>
-            <div className="mt-8 grid gap-3 text-xs text-cyan-200/80">
-              <div className="border border-cyan-950 p-3">HYBRID_SCORE = HEADERS + ML + AI + RULES</div>
-              <div className="border border-cyan-950 p-3">PHISHING OR SUSPICIOUS = HIGH RISK FLOOR</div>
-              <div className="border border-cyan-950 p-3">RESPONSIVE SOC DASHBOARD</div>
+            <div className="mt-8 grid gap-3 text-xs text-zinc-600">
+              <div className="rounded-lg border border-green-950/50 bg-black/40 p-3">HYBRID_SCORE = HEADERS + ML + AI + RULES</div>
+              <div className="rounded-lg border border-green-950/50 bg-black/40 p-3">PHISHING OR SUSPICIOUS = HIGH RISK FLOOR</div>
+              <div className="rounded-lg border border-green-950/50 bg-black/40 p-3">PREMIUM SOC DASHBOARD</div>
             </div>
           </div>
 
           <form className="p-6" onSubmit={submit}>
-            <div className="mb-6 grid grid-cols-2 border border-cyan-900">
-              <button type="button" className={`px-4 py-3 text-sm ${mode === "login" ? "bg-cyan-400 text-black" : "text-cyan-300"}`} onClick={() => setMode("login")}>
+            <p className="mb-6 text-xs font-bold tracking-[0.2em] text-green-700">SECURE ACCESS</p>
+            <div className="mb-6 grid grid-cols-2 overflow-hidden rounded-lg border border-green-900/40">
+              <button type="button" className={`px-4 py-3 text-sm font-semibold ${mode === "login" ? "bg-green-500/20 text-green-400" : "text-zinc-500"}`} onClick={() => setMode("login")}>
                 LOGIN
               </button>
-              <button type="button" className={`px-4 py-3 text-sm ${mode === "signup" ? "bg-cyan-400 text-black" : "text-cyan-300"}`} onClick={() => setMode("signup")}>
+              <button type="button" className={`px-4 py-3 text-sm font-semibold ${mode === "signup" ? "bg-green-500/20 text-green-400" : "text-zinc-500"}`} onClick={() => setMode("signup")}>
                 SIGNUP
               </button>
             </div>
@@ -991,8 +634,8 @@ function AuthScreen({ onAuthenticated }) {
               <AuthInput label="CONFIRM PASSWORD" type="password" value={form.confirm} onChange={(value) => update("confirm", value)} autoComplete="new-password" />
             )}
 
-            {error && <div className="mb-4 border border-red-500 bg-red-950/30 p-3 text-sm text-red-300">{error}</div>}
-            <button className="w-full border border-cyan-400 bg-cyan-400 px-4 py-3 font-black text-black hover:bg-cyan-300">
+            {error && <div className="mb-4 rounded-lg border border-red-500/40 bg-red-950/20 p-3 text-sm text-red-300">{error}</div>}
+            <button className="w-full rounded-lg border border-green-500/60 bg-green-500/10 px-4 py-3 font-bold text-green-400 transition hover:bg-green-500/20">
               {mode === "login" ? "ENTER CONSOLE" : "CREATE ACCOUNT"}
             </button>
           </form>
@@ -1005,9 +648,9 @@ function AuthScreen({ onAuthenticated }) {
 function AuthInput({ label, value, onChange, type = "text", autoComplete }) {
   return (
     <label className="mb-4 block">
-      <span className="mb-2 block text-xs tracking-[0.25em] text-cyan-500">{label}</span>
+      <span className="mb-2 block text-xs font-bold tracking-[0.2em] text-green-800">{label}</span>
       <input
-        className="w-full border border-cyan-900 bg-black px-3 py-3 text-cyan-100 outline-none focus:border-cyan-400"
+        className="w-full rounded-lg border border-green-900/50 bg-black/60 px-3 py-3 text-green-100 outline-none focus:border-green-500/50"
         type={type}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -1017,38 +660,14 @@ function AuthInput({ label, value, onChange, type = "text", autoComplete }) {
   );
 }
 
-function ExportButton({ disabled, onClick, label }) {
-  return (
-    <button
-      className="border border-green-500 px-2 py-3 font-black text-green-300 hover:bg-green-500 hover:text-black disabled:opacity-40"
-      disabled={disabled}
-      onClick={onClick}
-    >
-      {label}
-    </button>
-  );
-}
-
-function HighlightedText({ text }) {
-  const regex = new RegExp(`(${KEYWORDS.map(escapeRegex).join("|")})`, "gi");
-  return String(text || "").split(regex).map((part, index) => {
-    const isKeyword = KEYWORDS.some((keyword) => keyword.toLowerCase() === part.toLowerCase());
-    return isKeyword ? (
-      <span key={`${part}-${index}`} className="intel-keyword">
-        {part}
-      </span>
-    ) : (
-      <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>
-    );
-  });
-}
-
 function normalizeResult(result) {
   if (!result) return null;
   const parsedMeta = {
     hosting_space: nvl(result.parsed_meta?.hosting_space ?? result.hosting_space),
     domain_age: nvl(result.parsed_meta?.domain_age ?? result.domain_age),
     created_date: nvl(result.parsed_meta?.created_date),
+    updated_date: nvl(result.parsed_meta?.updated_date),
+    expiry_date: nvl(result.parsed_meta?.expiry_date),
     asn: nvl(result.parsed_meta?.asn ?? result.asn),
     country: nvl(result.parsed_meta?.country ?? result.country_code),
     http_status: nvl(result.parsed_meta?.http_status ?? result.final_http_status),
@@ -1062,6 +681,7 @@ function normalizeResult(result) {
       ? result.security_headers
       : Object.entries(result.security_headers || {}).map(([name, enabled]) => ({ name, enabled: Boolean(enabled) }));
   const headerDetails = (details.length ? details : defaultHeaderRows()).map(normalizeHeaderRow);
+  const whoisRaw = rawLogs.domain_whois || "";
   return {
     original: result,
     domain: result.domain || "target",
@@ -1075,7 +695,17 @@ function normalizeResult(result) {
     findings: result.findings || [],
     ai_verdict: result.ai_verdict || result.ai_markdown_report || "",
     risk_score: Number(result.risk_score || 0),
+    ssl_dates: result.ssl_dates || {},
+    nameservers: result.dns_data?.nameservers || [],
+    dnssec: /dnssec.*signed/i.test(whoisRaw) ? "Enabled" : whoisRaw ? "Unknown" : "N/A",
+    ssl_protocol: extractSslProtocol(rawLogs),
   };
+}
+
+function extractSslProtocol(rawLogs) {
+  const ssl = rawLogs?.ssl || "";
+  const match = ssl.match(/TLSv[\d.]+|Protocol\s*:\s*(TLS[^\s,]+)/i);
+  return match ? match[0].replace(/^Protocol\s*:\s*/i, "") : "N/A";
 }
 
 function rawLogsFromCommands(commands) {
