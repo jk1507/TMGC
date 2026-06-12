@@ -14,6 +14,9 @@ import ssl
 import urllib.request
 import urllib.error
 
+# Import the new hybrid scoring engine
+from scoring import compute_hybrid_score
+
 try:
     import dns.resolver as dns_resolver
 except ImportError:
@@ -137,21 +140,20 @@ def fallback_whois(query: str) -> str:
         return f"WHOIS fallback error: {e}"
 
 
-def fallback_ip_whois(ip: str) -> str:
-    """IP WHOIS fallback using RDAP (arin.net) with fallback to python-whois."""
+def _try_rdap(ip: str, base_url: str) -> str | None:
+    """Try a single RDAP endpoint. Returns formatted text or None."""
     try:
-        url = f"https://rdap.arin.net/registry/ip/{ip}"
+        url = f"{base_url}/ip/{ip}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=4.0) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             lines = []
-            
+
             if data.get("name"):
                 lines.append(f"OrgName: {data.get('name')}")
-            
             if data.get("handle"):
                 lines.append(f"netname: {data.get('handle')}")
-                
+
             country = None
             for entity in data.get("entities", []):
                 vcard = entity.get("vcardArray")
@@ -159,28 +161,180 @@ def fallback_ip_whois(ip: str) -> str:
                     for item in vcard[1]:
                         if item[0] == 'adr' and item[1].get('label'):
                             label = item[1].get('label')
-                            parts = [p.strip() for p in label.split('\n') if p.strip()]
-                            if parts:
-                                country = parts[-1]
+                            label_parts = [p.strip() for p in label.split('\n') if p.strip()]
+                            if label_parts:
+                                country = label_parts[-1]
                         if item[0] == 'org':
                             lines.append(f"descr: {item[3]}")
             if country:
                 lines.append(f"country: {country}")
-                
+
+            # Try all known ASN field names across RIRs
+            # Note: ARIN returns empty list [] rather than None, so check length
             asn = None
-            asns = data.get("arin_originas0_originautnums")
-            if asns and isinstance(asns, list):
-                asn = f"AS{asns[0]}"
+            for asn_key in ("arin_originas0_originautnums", "originAutnum", "autnum", "asn"):
+                asns = data.get(asn_key)
+                if asns is not None and isinstance(asns, (list, tuple)) and len(asns) > 0:
+                    asn = f"AS{asns[0]}"
+                    break
             if asn:
                 lines.append(f"origin: {asn}")
-            elif data.get("name") and "google" in str(data.get("name")).lower():
-                lines.append("origin: AS15169")
-                
+
+            # Extract organization name from entity vcard (more descriptive than network name)
+            org_name = None
+            for entity in data.get("entities", []):
+                vcard = entity.get("vcardArray")
+                if vcard and len(vcard) > 1:
+                    for item in vcard[1]:
+                        if item[0] == 'fn':
+                            org_name = str(item[3]) if len(item) > 3 else None
+                        if item[0] == 'org':
+                            org_name = str(item[3]) if len(item) > 3 else org_name
+            if org_name and not any("OrgName" in l for l in lines):
+                lines = [f"OrgName: {org_name}" if l.startswith("OrgName:") else l for l in lines]
+            elif org_name:
+                lines.append(f"OrgName: {org_name}")
+
+            # Infer ASN from org name if no direct ASN was found
+            if not any(l.startswith("origin:") for l in lines) and org_name:
+                org_lower = org_name.lower()
+                for org_key, (asn_val, _) in ORG_TO_ASN.items():
+                    if org_key in org_lower:
+                        lines.append(f"origin: {asn_val}")
+                        break
+
+            # Extract country from entity vcard address field
+            country_val = None
+            for entity in data.get("entities", []):
+                vcard = entity.get("vcardArray")
+                if vcard and len(vcard) > 1:
+                    for item in vcard[1]:
+                        if item[0] == 'adr':
+                            label = item[1].get('label', '') if isinstance(item[1], dict) else ''
+                            if label:
+                                parts = [p.strip() for p in label.split('\n') if p.strip()]
+                                if parts:
+                                    country_val = parts[-1]
+            if country_val and not any("country" in l for l in lines):
+                lines.append(f"country: {country_val}")
+
+            # Port43 hints for hosting provider
+            port43 = data.get("port43", "")
+            if port43 and not any("OrgName" in l or "descr" in l for l in lines):
+                host_hint = port43.split(".")[-2] if "." in port43 else port43
+                if host_hint and len(host_hint) > 2:
+                    lines.append(f"OrgName: {host_hint.upper()} (RDAP port43)")
+
             if lines:
                 return "\n".join(lines)
     except Exception:
         pass
-        
+    return None
+
+
+# OrgName-to-ASN mapping for hosting providers
+# Used when RDAP returns OrgName from entities but no ASN
+ORG_TO_ASN: dict[str, tuple[str, str]] = {
+    "google": ("AS15169", "US"),
+    "google llc": ("AS15169", "US"),
+    "cloudflare": ("AS13335", "US"),
+    "cloudflare inc": ("AS13335", "US"),
+    "amazon": ("AS16509", "US"),
+    "amazon.com": ("AS16509", "US"),
+    "amazon technologies": ("AS16509", "US"),
+    "aws": ("AS16509", "US"),
+    "microsoft": ("AS8075", "US"),
+    "microsoft corp": ("AS8075", "US"),
+    "meta platforms": ("AS32934", "US"),
+    "facebook": ("AS32934", "US"),
+    "fastly": ("AS54113", "US"),
+    "akamai": ("AS16625", "US"),
+    "apple": ("AS714", "US"),
+    "apple inc": ("AS714", "US"),
+    "digitalocean": ("AS14061", "US"),
+    "ovh": ("AS16276", "FR"),
+    "ovh sas": ("AS16276", "FR"),
+    "github": ("AS36459", "US"),
+    "netflix": ("AS2906", "US"),
+    "markmonitor": ("AS46844", "US"),
+}
+
+
+def _ptr_reverse_lookup(ip: str) -> str | None:
+    """Try a PTR reverse DNS lookup on the IP."""
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except Exception:
+        return None
+
+
+def _infer_from_hostname(hostname: str) -> tuple[str | None, str | None, str | None]:
+    """Infer hosting/ASN from a hostname (PTR result or domain)."""
+    d = hostname.lower()
+    if "google" in d or "youtube" in d or "gcp" in d:
+        return ("Google LLC", "AS15169", "US")
+    if "cloudflare" in d:
+        return ("Cloudflare Inc.", "AS13335", "US")
+    if "github" in d or "githubusercontent" in d:
+        return ("GitHub Inc.", "AS36459", "US")
+    if "microsoft" in d or "azure" in d or "live" in d or "office" in d:
+        return ("Microsoft Corp.", "AS8075", "US")
+    if "amazon" in d or "aws" in d or "cloudfront" in d:
+        return ("Amazon.com Inc.", "AS16509", "US")
+    if "facebook" in d or "meta" in d or "instagram" in d or "whatsapp" in d:
+        return ("Meta Platforms Inc.", "AS32934", "US")
+    if "apple" in d or "icloud" in d:
+        return ("Apple Inc.", "AS714", "US")
+    if "netflix" in d:
+        return ("Netflix Inc.", "AS2906", "US")
+    if "digitalocean" in d or "digital ocean" in d:
+        return ("DigitalOcean LLC", "AS14061", "US")
+    if "ovh" in d or "soyoustart" in d:
+        return ("OVH SAS", "AS16276", "FR")
+    if "fastly" in d:
+        return ("Fastly Inc.", "AS54113", "US")
+    if "akamai" in d:
+        return ("Akamai Technologies", "AS16625", "US")
+    return (None, None, None)
+
+
+RIR_RDAP_ENDPOINTS = [
+    "https://rdap.arin.net/registry",  # North America
+    "https://rdap.db.ripe.net/registry",  # Europe
+    "https://rdap.apnic.net/registry",  # Asia-Pacific
+    "https://rdap.lacnic.net/registry",  # Latin America
+    "https://rdap.afrinic.net/registry",  # Africa
+]
+
+
+def fallback_ip_whois(ip: str) -> str:
+    """
+    IP WHOIS fallback trying RDAP across ALL RIRs, then PTR/CDN heuristic, then python-whois.
+
+    Resolution chain:
+      1. RDAP: ARIN, RIPE, APNIC, LACNIC, AFRINIC
+      2. PTR reverse DNS + hostname CDN heuristics
+      3. python-whois library
+    """
+    # Step 1: Try each RIR RDAP endpoint
+    for endpoint in RIR_RDAP_ENDPOINTS:
+        result = _try_rdap(ip, endpoint)
+        if result is not None:
+            return result
+
+    # Step 2: PTR reverse DNS lookup + CDN heuristics
+    ptr_name = _ptr_reverse_lookup(ip)
+    if ptr_name:
+        provider, asn_num, country_code = _infer_from_hostname(ptr_name)
+        if provider:
+            lines = [
+                f"OrgName: {provider}",
+                f"origin: {asn_num}",
+                f"country: {country_code}",
+            ]
+            return "\n".join(lines)
+
+    # Step 3: Last resort - python-whois library
     return fallback_whois(ip)
 
 
@@ -239,60 +393,85 @@ async def fallback_port_scan(domain: str, ports: list[int]) -> str:
     return "\n".join(lines)
 
 
-def fallback_curl(domain: str) -> str:
-    """HTTP headers check fallback using urllib redirect tracking."""
-    url = f"https://{domain}"
+def _do_curl(url: str) -> str | None:
+    """
+    Perform a single HTTP request and return all headers with redirect tracing.
+    Returns None if the request fails.
+    """
     try:
         req = urllib.request.Request(
             url,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "Accept": "*/*"
+                "Accept": "*/*",
             }
         )
-        
+
         class RedirectTraceHandler(urllib.request.HTTPRedirectHandler):
             def __init__(self):
                 super().__init__()
                 self.trace = []
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 self.trace.append((req.full_url, code, headers))
+                # Cap redirects at 5 to avoid infinite loops
+                if len(self.trace) >= 5:
+                    raise urllib.error.HTTPError(req.full_url, code, "Too many redirects", headers, fp)
                 return super().redirect_request(req, fp, code, msg, headers, newurl)
-                
+
         handler = RedirectTraceHandler()
         opener = urllib.request.build_opener(handler)
-        
+
         output = []
-        with opener.open(req, timeout=5.0) as resp:
+        with opener.open(req, timeout=8.0) as resp:
+            # Emit redirect trace blocks
             for orig_url, code, headers in handler.trace:
                 output.append(f"HTTP/1.1 {code} Redirect")
                 for k, v in headers.items():
                     output.append(f"{k}: {v}")
                 output.append("")
-                
+
+            # Emit final response block
             status = getattr(resp, "status", 200)
             output.append(f"HTTP/1.1 {status} OK")
             for k, v in resp.headers.items():
                 output.append(f"{k}: {v}")
-                
+
             return "\n".join(output)
-    except Exception as e:
-        if url.startswith("https://"):
-            try:
-                url_http = f"http://{domain}"
-                req = urllib.request.Request(
-                    url_http,
-                    headers={"User-Agent": "Mozilla/5.0"}
-                )
-                with urllib.request.urlopen(req, timeout=5.0) as resp:
-                    status = getattr(resp, "status", 200)
-                    output = [f"HTTP/1.1 {status} OK"]
-                    for k, v in resp.headers.items():
-                        output.append(f"{k}: {v}")
-                    return "\n".join(output)
-            except Exception as e2:
-                return f"HTTP/HTTPS request failed: {e2}"
-        return f"HTTPS request failed: {e}"
+    except Exception:
+        return None
+
+
+def fallback_curl(domain: str) -> str:
+    """
+    HTTP headers check fallback using urllib with redirect tracking.
+    
+    Tries HTTPS first, then HTTP. Follows redirects and captures
+    ALL response headers from every hop in the redirect chain.
+    """
+    # First try: HTTPS with full redirect tracing
+    result = _do_curl(f"https://{domain}")
+    if result is not None:
+        return result
+
+    # Second try: HTTP with full redirect tracing
+    # Some servers redirect HTTP -> HTTPS, so we still get the final headers
+    result = _do_curl(f"http://{domain}")
+    if result is not None:
+        return result
+
+    # Third try: HTTPS with www prefix (some sites only resolve with www)
+    if not domain.startswith("www."):
+        result = _do_curl(f"https://www.{domain}")
+        if result is not None:
+            return result
+
+    # Fourth try: HTTP with www prefix
+    if not domain.startswith("www."):
+        result = _do_curl(f"http://www.{domain}")
+        if result is not None:
+            return result
+
+    return f"HTTP/HTTPS request failed for {domain}"
 
 
 async def run_python_fallback(name: str, command: list[str]) -> str | None:
@@ -308,6 +487,8 @@ async def run_python_fallback(name: str, command: list[str]) -> str | None:
         return await asyncio.to_thread(fallback_whois, domain)
     elif name == "ip_whois":
         ip = command[1]
+        # Try to get domain hint from the curl command output if available
+        # The fallback_ip_whois will try RDAP first, then CDN heuristics
         return await asyncio.to_thread(fallback_ip_whois, ip)
     elif name == "ssl":
         m = re.search(r"-connect\s+([a-zA-Z0-9.-]+):443", command[-1])
@@ -326,7 +507,7 @@ async def run_python_fallback(name: str, command: list[str]) -> str | None:
     return None
 
 
-def get_ml_prediction(domain: str, parsed_domain: Any, whois_raw_stdout: str) -> dict:
+def get_ml_prediction(domain: str, parsed_domain: Any, whois_raw_stdout: str, has_valid_ssl: bool = False, has_mx: bool = False, has_asn: bool = False, header_score: int = 0) -> dict:
     """Calculate lexical/whois features and run XGBoost model prediction."""
     try:
         import sys
@@ -369,7 +550,9 @@ def get_ml_prediction(domain: str, parsed_domain: Any, whois_raw_stdout: str) ->
             try:
                 typo_result = utils_detect_typosquatting(normalized_label)
                 typo_result_raw = utils_detect_typosquatting(label)
-                if typo_result_raw.get("jaro_winkler_score", 0.0) > typo_result.get("jaro_winkler_score", 0.0):
+                # Prefer raw label result if it detects something (catches normalization substitutions)
+                # or if its Jaro-Winkler score is strictly higher than the normalized version
+                if typo_result_raw.get("detected", False) or typo_result_raw.get("jaro_winkler_score", 0.0) > typo_result.get("jaro_winkler_score", 0.0):
                     typo_result = typo_result_raw
             except Exception:
                 pass
@@ -408,30 +591,124 @@ def get_ml_prediction(domain: str, parsed_domain: Any, whois_raw_stdout: str) ->
     
     age_log = np.log1p(age_days) / np.log1p(3650)
     
+    # ---- Expanded features for better ML separation ----
+    # Compute jaro-winkler similarity between the UN-NORMALIZED label and the closest brand.
+    # This catches domains like "g00gle" where normalization turns them into exact brand
+    # matches, because the un-normalized label still has a high similarity to "google".
+    # Also compute whether normalization changed the label at all.
+    jaro_raw_vs_brand = 0.0
+    label_normalized_changed = 0.0
+    if utils_detect_typosquatting:
+        try:
+            raw_typo_check = utils_detect_typosquatting(label)  # original unnormalized label
+            jaro_raw_vs_brand = raw_typo_check.get("jaro_winkler_score", 0.0)
+            # If the raw label has high similarity to a brand but detected=False,
+            # this means normalization turned it into an exact match — we want to flag that.
+            if jaro_raw_vs_brand >= 0.70 and not raw_typo_check.get("detected", False):
+                pass  # Still use the similarity score; the model can learn from it
+        except Exception:
+            pass
+    
+    # Check if homoglyph normalization changed the label
+    if normalize_homoglyphs:
+        try:
+            normed = normalize_homoglyphs(label)
+            if normed != label:
+                label_normalized_changed = 1.0
+        except Exception:
+            pass
+    
+    # Max consecutive digits in the domain label
+    consecutive_digits = 0.0
+    if domain_name:
+        digit_runs = re.findall(r"\d+", domain_name)
+        if digit_runs:
+            consecutive_digits = min(max(len(r) for r in digit_runs) / 5.0, 1.0)
+    
+    # TLD risk score (continuous 0.0-1.0)
+    tld_score = 0.0
+    tld_from_domain = parts[-1] if len(parts) >= 2 else ""
+    if tld_from_domain:
+        if tld_from_domain in {"gov", "edu", "mil"}:
+            tld_score = 0.0
+        elif tld_from_domain in {"com", "org", "net"}:
+            tld_score = 0.1
+        elif tld_from_domain in {"io", "co", "app", "dev", "ai"}:
+            tld_score = 0.2
+        elif tld_from_domain in {"info", "biz", "me", "tv"}:
+            tld_score = 0.3
+        elif tld_from_domain in {"online", "site", "club", "live", "work", "support"}:
+            tld_score = 0.6
+        elif tld_from_domain in {"xyz", "top", "click", "loan"}:
+            tld_score = 0.8
+        elif tld_from_domain in {"tk", "ml", "ga", "cf", "gq"}:
+            tld_score = 1.0
+        elif tld_from_domain in {"onion", "i2p", "bit"}:
+            tld_score = 1.0
+    
+    # Unique brand-like tokens in domain (different from phishing keyword count)
+    # Counts how many distinct word-like segments exist in the domain label
+    # after splitting on hyphens and underscores. Legitimate brands usually have 1-2 tokens,
+    # while combosquatting domains often have 3+ tokens (e.g., "google-account-security").
+    normalized_tokens = set()
+    if normalize_homoglyphs:
+        try:
+            label_tokens = re.split(r"[\-_]+", domain_name)
+            for t in label_tokens:
+                nt = normalize_homoglyphs(t)
+                if len(nt) > 2:  # skip very short tokens
+                    normalized_tokens.add(nt)
+        except Exception:
+            pass
+    unique_token_count = min(len(normalized_tokens) / 5.0, 1.0)
+
     vector = [
-        min(features.get("length", len(domain_name)) / 50.0, 1.0),            # 0
-        features.get("digit_ratio", round(sum(c.isdigit() for c in domain_name) / max(1, len(domain_name)), 4)), # 1
-        min(features.get("hyphen_count", domain_name.count("-")) / 5.0, 1.0),        # 2
-        min(features.get("subdomain_count", len(parts) - 2) / 5.0, 1.0),      # 3
-        min(features.get("entropy", 3.0) / 5.0, 1.0),                         # 4
-        features.get("consonant_ratio", consonant_ratio),                      # 5
-        float(features.get("suspicious_tld", ("." + parts[-1]) in SUSPICIOUS_TLDS)),  # 6
-        float(features.get("has_suspicious_keywords", any(k in clean for k in KNOWN_BRANDS))), # 7
-        float(features.get("is_ip_like", bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", clean)))), # 8
-        float(features.get("has_excessive_hyphens", has_excessive_hyphens)),   # 9
-        typo_result.get("jaro_winkler_score", 0.0),                           # 10
-        typo_result.get("levenshtein_score", 0.0),                            # 11
-        min(typo_result.get("edit_distance", 10) / 10.0, 1.0),                 # 12
-        float(typo_result.get("detected", False)),                            # 13
-        float(homoglyph_result.get("detected", False)),                       # 14
-        min(homoglyph_result.get("count", 0) / 5.0, 1.0),                      # 15
-        float(homoglyph_result.get("has_digit_substitution", False)),          # 16
-        float(combo_result.get("detected", False)),                           # 17
-        float(combo_result.get("brand_only", False)),                         # 18
-        min(len(combo_result.get("matched_keywords", [])) / 5.0, 1.0),          # 19
-        age_log,                                                              # 20
-        float(privacy),                                                       # 21
-        float(suspicious_reg),                                                # 22
+        min(features.get("length", len(domain_name)) / 50.0, 1.0),            # 0: normalized length
+        features.get("digit_ratio", round(sum(c.isdigit() for c in domain_name) / max(1, len(domain_name)), 4)), # 1: digit ratio
+        min(features.get("hyphen_count", domain_name.count("-")) / 5.0, 1.0),        # 2: hyphen count
+        min(features.get("subdomain_count", len(parts) - 2) / 5.0, 1.0),      # 3: subdomain depth
+        min(features.get("entropy", 3.0) / 5.0, 1.0),                         # 4: Shannon entropy
+        features.get("consonant_ratio", consonant_ratio),                      # 5: consonant ratio
+        float(features.get("suspicious_tld", ("." + parts[-1]) in SUSPICIOUS_TLDS)),  # 6: suspicious TLD
+        float(features.get("has_suspicious_keywords", any(k in clean for k in KNOWN_BRANDS))), # 7: has brand keywords
+        float(features.get("is_ip_like", bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", clean)))), # 8: IP-like
+        float(features.get("has_excessive_hyphens", has_excessive_hyphens)),   # 9: >=3 hyphens
+        typo_result.get("jaro_winkler_score", 0.0),                           # 10: Jaro-Winkler (normalized)
+        typo_result.get("levenshtein_score", 0.0),                            # 11: Levenshtein (normalized)
+        min(typo_result.get("edit_distance", 10) / 10.0, 1.0),                 # 12: edit distance (normalized)
+        float(typo_result.get("detected", False)),                            # 13: typosquatting detected
+        float(homoglyph_result.get("detected", False)),                       # 14: homoglyph detected
+        min(homoglyph_result.get("count", 0) / 5.0, 1.0),                      # 15: homoglyph count
+        float(homoglyph_result.get("has_digit_substitution", False)),          # 16: digit substitution
+        float(combo_result.get("detected", False)),                           # 17: combosquatting detected
+        float(combo_result.get("brand_only", False)),                         # 18: brand only (no kw)
+        min(len(combo_result.get("matched_keywords", [])) / 5.0, 1.0),          # 19: keyword count
+        age_log,                                                              # 20: domain age (log)
+        float(privacy),                                                       # 21: WHOIS privacy
+        float(suspicious_reg),                                                # 22: suspicious registrar
+        # ---- NEW FEATURES (23-27): added for better ML separation ----
+        jaro_raw_vs_brand,                                                    # 23: Jaro-Winkler (unnormalized label)
+        label_normalized_changed,                                             # 24: normalization changed label
+        consecutive_digits,                                                   # 25: max consecutive digits
+        tld_score,                                                            # 26: TLD risk score (0.0-1.0)
+        unique_token_count,                                                   # 27: unique normalized tokens in label
+        # ---- INFERENCE-TIME FEATURE: SSL validity ----
+        # Passed from run_analysis() after SSL probe completed.
+        # Provides real infrastructure signal: legitimate sites almost always have SSL.
+        float(has_valid_ssl),  # 28: SSL certificate valid (1.0=yes, 0.0=no)
+        # ---- INFERENCE-TIME FEATURE: MX presence ----
+        # legitimate domains almost always have MX records for email;
+        # phishing domains often skip MX configuration entirely.
+        float(has_mx),         # 29: MX records present (1.0=yes, 0.0=no)
+        # ---- INFERENCE-TIME FEATURE: ASN availability ----
+        # legitimate sites run on properly registered infrastructure with
+        # identifiable ASN; phishing sites often hide behind obscure hosts.
+        float(has_asn),         # 30: ASN data available (1.0=yes, 0.0=no)
+        # ---- INFERENCE-TIME FEATURE: Security header posture ----
+        # header_score is 0-25+ where higher = more/missing security headers.
+        # Legitimate sites have low header_scores (well-configured security);
+        # phishing sites tend to have missing security headers (high scores).
+        min(header_score / 15.0, 1.0),  # 31: header security deficit 0.0=perfect(max 15=all 5 required headers missing)
     ]
     
     try:
@@ -713,7 +990,16 @@ def score_security_headers(headers: dict[str, Any] | list[HeaderStatus]) -> tupl
 
 
 def classify_score(score: int) -> str:
-    return "HIGH RISK" if score >= 60 else "SUSPICIOUS" if score >= 30 else "SAFE"
+    """Legacy classification aligned with THREAT_LEVELS from scoring.py."""
+    if score >= 71:
+        return "CRITICAL"
+    if score >= 46:
+        return "HIGH RISK"
+    if score >= 26:
+        return "SUSPICIOUS"
+    if score >= 11:
+        return "LOW RISK"
+    return "SAFE"
 
 
 def combine_analysis_scores(
@@ -721,7 +1007,77 @@ def combine_analysis_scores(
     header_score: int,
     ai_score: int | None,
     xgb_res: dict[str, Any],
+    # Domain context for the new hybrid scoring engine (optional, backward compatible)
+    domain: str = "",
+    age_days: int | None = None,
+    registrar: str | None = None,
+    ssl_issuer: str | None = None,
+    asn: str | None = None,
+    hosting: str | None = None,
+    has_dnssec: bool = False,
+    has_valid_ssl: bool = False,
+    has_mx: bool = False,
+    has_nameservers: bool = False,
+    privacy_protected: bool = False,
+    suspicious_registrar: bool = False,
+    is_ip_like: bool = False,
+    has_typosquatting: bool = False,
+    typosquatting_score: float = 0.0,
+    has_homoglyph: bool = False,
+    homoglyph_count: int = 0,
+    has_digit_substitution: bool = False,
+    has_combosquatting: bool = False,
+    has_brand_only: bool = False,
+    suspicious_tld: bool = False,
+    tld: str = "",
+    excessive_subdomains: bool = False,
+    dark_web_tld: bool = False,
+    has_password_form: bool = False,
+    has_external_form_action: bool = False,
+    findings: list[str] | None = None,
 ) -> tuple[int, dict[str, Any], list[str]]:
+    """
+    Combine analysis scores into a final hybrid risk score.
+
+    Uses the new scoring engine from scoring.py when domain context is provided,
+    falling back to the legacy algorithm for backward compatibility.
+    """
+    # If domain context is provided, use the new hybrid scoring engine
+    if domain:
+        return compute_hybrid_score(
+            domain=domain,
+            heuristic_score=heuristic_score,
+            header_score=header_score,
+            xgb_res=xgb_res,
+            ai_score=ai_score,
+            age_days=age_days,
+            registrar=registrar,
+            ssl_issuer=ssl_issuer,
+            asn=asn,
+            hosting=hosting,
+            has_dnssec=has_dnssec,
+            has_valid_ssl=has_valid_ssl,
+            has_mx=has_mx,
+            has_nameservers=has_nameservers,
+            privacy_protected=privacy_protected,
+            suspicious_registrar=suspicious_registrar,
+            is_ip_like=is_ip_like,
+            has_typosquatting=has_typosquatting,
+            typosquatting_score=typosquatting_score,
+            has_homoglyph=has_homoglyph,
+            homoglyph_count=homoglyph_count,
+            has_digit_substitution=has_digit_substitution,
+            has_combosquatting=has_combosquatting,
+            has_brand_only=has_brand_only,
+            suspicious_tld=suspicious_tld,
+            tld=tld,
+            excessive_subdomains=excessive_subdomains,
+            dark_web_tld=dark_web_tld,
+            has_password_form=has_password_form,
+            has_external_form_action=has_external_form_action,
+        )
+
+    # Legacy fallback (when no domain context is provided)
     xgb_available = bool(xgb_res.get("xgb_available"))
     xgb_score = float(xgb_res.get("xgb_score", 0.0) or 0.0) if xgb_available else None
     xgb_verdict = str(xgb_res.get("xgb_verdict", "") or "").lower()
@@ -751,7 +1107,7 @@ def combine_analysis_scores(
 
     floor_reasons: list[str] = []
 
-# Only extreme evidence should force high-risk
+    # Only extreme evidence should force high-risk
     strong_signals = 0
 
     if xgb_available and xgb_verdict == "phishing" and (xgb_score or 0) >= 80:
@@ -780,11 +1136,11 @@ def combine_analysis_scores(
         "xgboost_ml": xgb_score,
         "ai_analysis": ai_score,
         "signal_strength": {
-    "heuristic_analysis": "PRIMARY",
-    "security_headers": "SUPPORTING",
-    "xgboost_ml": "SUPPORTING",
-    "ai_analysis": "CONFIDENCE BOOST",
-},
+            "heuristic_analysis": "PRIMARY",
+            "security_headers": "SUPPORTING",
+            "xgboost_ml": "SUPPORTING",
+            "ai_analysis": "CONFIDENCE BOOST",
+        },
         "final_score": final_score,
     }
     return final_score, components, floor_reasons
@@ -817,6 +1173,8 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
     )
     ping_task = run_command("ping", platform_ping_command(domain), timeout=10, merge_stderr=True)
 
+    # Also store the original domain as a hint for IP fallback
+    # The fallback_ip_whois can use domain_hint for CDN/PTR inference
     ip_whois_task = (
         run_command("ip_whois", ["whois", primary_ip])
         if primary_ip
@@ -891,18 +1249,100 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
     for finding in header_findings:
         add_finding(findings, finding)
     
-    # Run XGBoost ML prediction
+    # Run XGBoost ML prediction (after SSL data is available for inference-time features)
+    has_valid_ssl_for_ml = bool(ssl_data.get("issuer"))
+    has_mx_val = bool(dns_data.get("mx_records"))
+    has_asn_for_ml = bool(parsed_meta.get("asn") and parsed_meta["asn"] != "N/A")
     xgb_res = {"xgb_available": False}
     try:
-        xgb_res = get_ml_prediction(domain, parsed_domain, domain_whois.stdout)
+        xgb_res = get_ml_prediction(domain, parsed_domain, domain_whois.stdout,
+                                     has_valid_ssl_for_ml, has_mx_val, has_asn_for_ml, header_score)
     except Exception as e:
         print("ML prediction execution failed:", e)
+
+    # Extract domain info for the new hybrid scoring engine
+    age_days_val = domain_age_days(parsed_meta.get("created_date") if parsed_meta.get("created_date") != "N/A" else None)
+    has_valid_ssl_val = bool(parsed_meta.get("ssl_issuer") and parsed_meta["ssl_issuer"] != "N/A")
+    has_ns_val = bool(dns_data.get("nameservers"))
+    findings_text = " ".join(str(f).upper() for f in findings)
+    
+    # Extract structured signals from findings text
+    has_typo = "TYPOSQUATTING" in findings_text or "IMPERSONATION" in findings_text
+    has_homoglyph = "HOMOGLYPH" in findings_text or "CONFUSABLE" in findings_text or "UNICODE" in findings_text
+    homoglyph_count_val = 0
+    if has_homoglyph:
+        for f in findings:
+            m = re.search(r"suspicious char\(s\)\.?\s*(\d+)", f, re.IGNORECASE)
+            if m:
+                homoglyph_count_val = max(homoglyph_count_val, int(m.group(1)))
+        if homoglyph_count_val == 0:
+            homoglyph_count_val = 2  # reasonable default when homoglyph is detected
+    has_combo = "COMBO-SQUATTING" in findings_text or "BRAND + PHISHING" in findings_text or "BRAND+KEYWORD" in findings_text
+    has_suspicious_tld = any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS)
+    is_ip_like_flag = bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", domain))
+    has_privacy = "PRIVACY" in findings_text or "REDACTED" in findings_text or "WHOIS PRIVACY" in findings_text
+    has_suspicious_reg = "SUSPICIOUS REGISTRAR" in findings_text
+    excessive_subdomains_flag = "EXCESSIVE SUBDOMAIN" in findings_text or "SUBDOMAIN DEPTH" in findings_text
+    dark_web = any(domain.endswith(tld) for tld in [".onion", ".i2p", ".bit"])
+    has_password = bool(website_result and website_result.get("signals", {}).get("has_password_input"))
+    has_external_form = bool(website_result and website_result.get("signals", {}).get("external_form_actions"))
+    
+    # Extract TLD
+    parts = domain.split(".")
+    tld_val = parts[-1] if len(parts) >= 2 else ""
+    
+    # Simple default for detected typosquatting
+    typo_score = 0.85 if has_typo else 0.0
+    
+    # ---- Detect digit substitution directly from domain ----
+    # The typosquatting detection in findings may not explicitly use the keyword
+    # "HOMOGLYPH" or "DIGIT SUBSTITUTION". Check the domain label itself for
+    # digits that are confusable with letters (0->o, 1->l, 3->e, 4->a, 5->s, 7->t).
+    DIGIT_CONFUSABLES = "0134567"
+    domain_label = parts[0] if parts else ""
+    has_digit_substitution_flag = False
+    if has_typo:
+        # If the domain was flagged as typosquatting AND contains digit confusables
+        digit_count = sum(1 for c in domain_label if c in DIGIT_CONFUSABLES)
+        if digit_count > 0:
+            has_digit_substitution_flag = True
+            # Also mark homoglyph if it wasn't already detected
+            if not has_homoglyph:
+                has_homoglyph = True
+                homoglyph_count_val = digit_count
+            elif homoglyph_count_val == 0:
+                homoglyph_count_val = digit_count
 
     risk_score, score_components, floor_findings = combine_analysis_scores(
         heuristic_score=heuristic_score,
         header_score=header_score,
         ai_score=ai_score,
         xgb_res=xgb_res,
+        # New hybrid scoring context
+        domain=domain,
+        age_days=age_days_val,
+        registrar=parsed_meta.get("registrar") if parsed_meta.get("registrar") != "N/A" else None,
+        ssl_issuer=parsed_meta.get("ssl_issuer") if parsed_meta.get("ssl_issuer") != "N/A" else None,
+        asn=parsed_meta.get("asn") if parsed_meta.get("asn") != "N/A" else None,
+        hosting=parsed_meta.get("hosting_space") if parsed_meta.get("hosting_space") != "N/A" else None,
+        has_valid_ssl=has_valid_ssl_val,
+        has_mx=has_mx_val,
+        has_nameservers=has_ns_val,
+        privacy_protected=has_privacy,
+        suspicious_registrar=has_suspicious_reg,
+        is_ip_like=is_ip_like_flag,
+        has_typosquatting=has_typo,
+        typosquatting_score=typo_score,
+        has_homoglyph=has_homoglyph,
+        homoglyph_count=homoglyph_count_val,
+        has_digit_substitution=has_digit_substitution_flag,
+        has_combosquatting=has_combo,
+        suspicious_tld=has_suspicious_tld,
+        tld=tld_val,
+        excessive_subdomains=excessive_subdomains_flag,
+        dark_web_tld=dark_web,
+        has_password_form=has_password,
+        has_external_form_action=has_external_form,
     )
     for finding in floor_findings:
         add_finding(findings, finding)
@@ -1103,11 +1543,54 @@ def normalize_whois_value(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip(" \t\r\n")
 
 
+# Mapping of full country names to ISO 3166-1 alpha-2 codes
+_COUNTRY_NAME_TO_CODE: dict[str, str] = {
+    "united states": "US", "usa": "US", "u.s.a.": "US", "u.s.": "US",
+    "united kingdom": "GB", "uk": "GB", "great britain": "GB",
+    "germany": "DE", "france": "FR", "canada": "CA",
+    "australia": "AU", "japan": "JP", "china": "CN",
+    "india": "IN", "brazil": "BR", "russia": "RU",
+    "south korea": "KR", "korea": "KR", "netherlands": "NL",
+    "italy": "IT", "spain": "ES", "switzerland": "CH",
+    "sweden": "SE", "norway": "NO", "denmark": "DK",
+    "finland": "FI", "singapore": "SG", "hong kong": "HK",
+    "taiwan": "TW", "ireland": "IE", "new zealand": "NZ",
+    "poland": "PL", "austria": "AT", "belgium": "BE",
+    "portugal": "PT", "israel": "IL", "turkey": "TR",
+    "south africa": "ZA", "mexico": "MX", "argentina": "AR",
+    "chile": "CL", "colombia": "CO", "czech republic": "CZ",
+    "hungary": "HU", "romania": "RO", "ukraine": "UA",
+    "vietnam": "VN", "thailand": "TH", "malaysia": "MY",
+    "indonesia": "ID", "philippines": "PH", "pakistan": "PK",
+    "bangladesh": "BD", "egypt": "EG", "nigeria": "NG",
+    "kenya": "KE", "saudi arabia": "SA", "uae": "AE",
+    "united arab emirates": "AE",
+}
+
+
+def _normalize_country(raw: str | None) -> str | None:
+    """Normalize a country string to a 2-letter ISO code."""
+    if not raw:
+        return None
+    s = raw.strip().strip(".").strip()
+    if len(s) == 2:
+        return s.upper()
+    if len(s) == 3:
+        # Might be a 3-letter code or abbreviation
+        up = s.upper()
+        # Check if the full name maps to a code
+        for name, code in _COUNTRY_NAME_TO_CODE.items():
+            if up == code or name == s.lower():
+                return code
+        return up
+    return _COUNTRY_NAME_TO_CODE.get(s.lower(), s[:2].upper() if s else None)
+
+
 def parse_ip_whois(stdout: str) -> dict[str, str | None]:
     text = stdout or ""
     hosting = find_first_field(text, ["OrgName", "org-name", "descr", "owner", "netname", "organization", "abuse-mailbox"])
     asn_raw = find_first_field(text, ["origin", "OriginAS", "aut-num", "originas", "ASN"])
-    country = find_first_field(text, ["country", "Country", "Registrant Country"])
+    country_raw = find_first_field(text, ["country", "Country", "Registrant Country"])
 
     asn = None
     if asn_raw:
@@ -1117,7 +1600,7 @@ def parse_ip_whois(stdout: str) -> dict[str, str | None]:
     return {
         "hosting_space": hosting or None,
         "asn": asn,
-        "country": country.upper()[:2] if country else None,
+        "country": _normalize_country(country_raw),
     }
 
 
@@ -1518,6 +2001,43 @@ def analyze_threat_intel(
         add_finding(findings, "HIGH RISK: Brand-lookalike domain also presents a credential form.")
         score += 20
 
+    # ---- CLONE WEBSITE DETECTION ----
+    # Check if the website title or content suggests a different brand identity
+    # than what the domain name naturally represents. This catches clone/phishing
+    # sites that mimic well-known brands.
+    website_title = website_result.get("signals", {}).get("title", "") or ""
+    if website_title and signals.get("has_password_input"):
+        title_lower = website_title.lower()
+        # Check if the page title mentions a brand NOT present in the domain
+        for brand in KNOWN_BRANDS:
+            if brand in title_lower and brand not in domain.lower():
+                add_finding(
+                    findings,
+                    f"HIGH RISK: Page title references '{brand.title()}' but domain does not match — "
+                    f"potential brand cloning / phishing page."
+                )
+                score += 20
+                # If also has external form action, escalate further
+                if signals.get("external_form_actions"):
+                    score += 15
+                    add_finding(
+                        findings,
+                        f"CRITICAL: Page clones '{brand.title()}' AND submits credentials externally — "
+                        f"confirmed credential harvesting."
+                    )
+                break
+
+    # Check for .edu-style domain impersonation (e.g. domains ending in "edu" patterns
+    # but not actually .edu TLDs, which often target educational institutions)
+    domain_label = domain.split(".")[0].lower() if "." in domain else domain.lower()
+    if "edu" in domain_label and not domain.endswith(".edu"):
+        add_finding(
+            findings,
+            "SUSPICIOUS: Domain label contains 'edu' but TLD is not .edu — "
+            "may impersonate educational institution."
+        )
+        score += 8
+
   # Security header analysis
 # Only evaluate headers if website responded successfully
 
@@ -1545,11 +2065,22 @@ def analyze_threat_intel(
                 score += 1
 
         else:
-            add_finding(
-                findings,
-                "LOW RISK: HSTS missing. HTTPS downgrade protection unavailable."
-            )
-            score += 2
+            # Check for Alt-Svc header (HTTP/3 support) as signal of modern infrastructure
+            # Many HSTS-preloaded domains (google.com, amazon.com) don't send HSTS header
+            # but use Alt-Svc for upgrade signaling instead. Don't penalize these.
+            raw_log = (raw_logs.get("curl", "") or "").lower()
+            has_alt_svc = "alt-svc" in raw_log and "h3=" in raw_log
+            if has_alt_svc:
+                add_finding(
+                    findings,
+                    "INFO: HSTS header not sent but Alt-Svc (HTTP/3) detected - domain likely HSTS preloaded."
+                )
+            else:
+                add_finding(
+                    findings,
+                    "LOW RISK: HSTS missing. HTTPS downgrade protection unavailable."
+                )
+                score += 2
 
         # CSP
         if security_headers.get("Content-Security-Policy", False):

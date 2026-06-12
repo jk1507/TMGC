@@ -666,15 +666,37 @@ def detect_typosquatting(domain_name: str) -> Dict[str, Any]:
             "edit_distance": 999,
         }
 
+    # Check if the original label (before normalization) differs from the normalized form.
+    # This catches homoglyph/digit substitutions like "g00gle" → normalized to "google".
+    # If normalization changed the label AND the normalized version matches a brand,
+    # then the domain is visually impersonating that brand through character substitution.
     exact_brand = best["edit_distance"] == 0 and label == _skeletonize(str(best["brand"]))
-    detected = not exact_brand and (
-        (
-            best["combined_score"] >= 0.84 and best["edit_distance"] <= 3
-        ) or (
-            best["jaro_winkler_score"] >= 0.90 and best["edit_distance"] <= 2
+    
+    # Separate check: was it the normalization that made it an exact brand match?
+    original_label = _safe_lower(domain_name)  # Before skeletonize
+    normalized_label = _skeletonize(domain_name)
+    is_normalization_substitution = (
+        exact_brand
+        and original_label != normalized_label
+        and normalized_label == _skeletonize(str(best["brand"]))
+    )
+    
+    detected = (
+        is_normalization_substitution
+        or (
+            not exact_brand
+            and (
+                (best["combined_score"] >= 0.84 and best["edit_distance"] <= 3)
+                or (best["jaro_winkler_score"] >= 0.90 and best["edit_distance"] <= 2)
+            )
         )
     )
-    reason = "Strong brand lookalike" if detected else "No strong near-brand signal"
+    if is_normalization_substitution:
+        reason = "Strong brand lookalike (via character substitution)"
+    elif detected:
+        reason = "Strong brand lookalike"
+    else:
+        reason = "No strong near-brand signal"
     return {
         "detected": detected,
         "reason": reason,
