@@ -874,3 +874,102 @@ Engine   Feeds    Analysis
 │ SOC Dashboard       │
 │ PDF / Reports       │
 └─────────────────────┘
+
+
+## 🧪 `test_100_domains.py`
+
+### Overview
+
+`test_100_domains.py` is an automated benchmarking and validation utility used to evaluate the effectiveness of the TMGC threat detection engine across a large dataset of domains.
+
+This script performs bulk testing on **100+ domains** to verify the consistency, accuracy, and reliability of the phishing detection pipeline.
+
+---
+
+### Purpose
+
+The primary objective of this file is to test and benchmark TMGC after:
+
+* Machine learning retraining
+* Threat scoring updates
+* Rule-engine modifications
+* New phishing detection improvements
+* Backend security logic changes
+
+It helps ensure that new updates do not negatively affect detection quality.
+
+---
+
+### What It Tests
+
+The script automatically evaluates multiple domain categories, including:
+
+✅ Legitimate domains
+🚨 Phishing domains
+⚠️ Suspicious domains
+🔍 Typosquatting attacks
+🌍 Homoglyph attacks
+🎭 Combo-squatting domains
+
+Examples:
+
+```txt
+google.com → Legitimate
+paypa1.com → Typosquatting
+gοogle.com → Homoglyph Attack
+amazon-login.xyz → Suspicious
+```
+
+---
+
+### Detection Pipeline
+
+The testing workflow follows the complete TMGC detection architecture:
+
+```txt
+Domain Dataset
+       ↓
+Threat Analysis Engine
+       ↓
+Rule-Based Detection
+       ↓
+Machine Learning (XGBoost)
+       ↓
+Threat Intelligence Checks
+       ↓
+Hybrid Risk Scoring
+       ↓
+Final Classification
+```
+
+---
+
+### Metrics Evaluated
+
+The script helps measure:
+
+* **Detection Accuracy**
+* **Precision**
+* **Recall**
+* **F1 Score**
+* **False Positive Rate**
+* **False Negative Rate**
+* **Risk Score Consistency**
+
+These metrics help validate the real-world performance of TMGC.
+
+---
+
+### Usage
+
+Run the benchmark test using:
+
+```bash
+python test_100_domains.py
+```
+
+---
+
+### Status
+
+**Active Testing / Benchmarking Utility**
