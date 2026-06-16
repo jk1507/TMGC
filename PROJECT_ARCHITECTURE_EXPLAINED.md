@@ -1,4 +1,4 @@
-# TMGC / RETRO_INTEL — COMPLETE PROJECT ARCHITECTURE EXPLAINED
+# TMGC  — COMPLETE PROJECT ARCHITECTURE EXPLAINED
 
 This document explains what each file in the project does, how files connect, and what role every component plays.
 
