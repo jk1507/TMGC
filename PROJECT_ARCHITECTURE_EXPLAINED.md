@@ -46,7 +46,7 @@ Threat Analysis Engine
 ↓
 ML + Threat Feeds + Website Inspection
 ↓
-Risk Score
+Riskk Score
 ↓
 Gemini AI Analysis
 ↓
