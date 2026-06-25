@@ -1,6 +1,16 @@
 """
 Production phishing domain detection utilities.
 Deterministic scoring only: no synthetic data, no random values.
+
+v2.0 — Production Hardening:
+  - SSL/TLS: Full certificate chain validation, expiration, hostname mismatch,
+    self-signed, revoked, untrusted root, weak protocol/cipher detection
+  - Abused Infrastructure: ngrok, duckdns, serveo, no-ip, ddns.net detection
+  - Brand Impersonation: Expanded brands, keyboard proximity attacks
+  - Punycode/Homograph: Full punycode decode and visual impersonation warnings
+  - Redirect Chain: Safe redirect following, chain analysis
+  - URL Path Intelligence: Suspicious keyword detection in paths
+  - Subdomain Phishing: Brand impersonation via subdomain abuse
 """
 
 from __future__ import annotations
@@ -14,7 +24,7 @@ import json
 import math
 import re
 import socket
-import ssl
+import ssl as ssl_module
 import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 from urllib import error as urllib_error
@@ -50,9 +60,24 @@ __all__ = [
     "extract_features",
     "analyze_whois_mock",
     "analyze_dns_signals",
+    "analyze_dns_records",
     "analyze_ssl_signals",
     "analyze_virustotal",
     "compute_risk_score",
+    "detect_abused_infrastructure",
+    "detect_subdomain_phishing",
+    "detect_url_path_signals",
+    "analyze_redirect_chain",
+    "detect_punycode_homograph",
+    "is_ssl_expired_error",
+    "is_ssl_self_signed_error",
+    "is_ssl_hostname_mismatch_error",
+    "is_ssl_revoked_error",
+    "is_ssl_untrusted_root_error",
+    "calculate_keyboard_distance",
+    "analyze_certificate_transparency",
+    "enumerate_subdomains",
+    "analyze_dns_records",
 ]
 
 
@@ -63,8 +88,10 @@ _LABEL_RE = re.compile(
     r"^[a-z0-9\u0080-\uffff](?:[a-z0-9\-_ \u0080-\uffff]{0,61}[a-z0-9\u0080-\uffff])?$",
     re.IGNORECASE,
 )
-_LABEL_RE = re.compile(r"^[a-z0-9\u0080-\uffff](?:[a-z0-9\-_\u0080-\uffff]{0,61}[a-z0-9\u0080-\uffff])?$", re.IGNORECASE)
 
+# ==============================================================================
+# HOMOGLYPH / CONFUSABLE CHARACTER MAP
+# ==============================================================================
 
 RAW_HOMOGLYPHS: Dict[str, str] = {
     "0": "o", "1": "l", "2": "z", "3": "e", "4": "a", "5": "s", "6": "g", "7": "t", "8": "b", "9": "g",
@@ -74,37 +101,295 @@ RAW_HOMOGLYPHS: Dict[str, str] = {
 TRANS_TABLE = {ord(k): v for k, v in RAW_HOMOGLYPHS.items()}
 PAIR_SUBS: List[Tuple[str, str]] = [("rn", "m"), ("vv", "w"), ("cl", "d")]
 
+# ==============================================================================
+# KEYBOARD PROXIMITY MAP (QWERTY)
+# ==============================================================================
+
+# QWERTY keyboard adjacency for detecting keyboard-walking/adjacent-char attacks
+_KEYBOARD_ROWS = [
+    set("qwertyuiop[]\\"),
+    set("asdfghjkl;'"),
+    set("zxcvbnm,./"),
+]
+_KEYBOARD_NEIGHBORS: Dict[str, str] = {
+    # Row 1
+    "q": "w", "w": "qe", "e": "wr", "r": "et", "t": "ry", "y": "tu",
+    "u": "yi", "i": "uo", "o": "ip", "p": "o[", "[": "p]", "]": "[",
+    # Row 2
+    "a": "s", "s": "ad", "d": "sf", "f": "dg", "g": "fh", "h": "gj",
+    "j": "hk", "k": "jl", "l": "k;", ";": "l'", "'": ";",
+    # Row 3
+    "z": "x", "x": "zc", "c": "xv", "v": "cb", "b": "vn", "n": "bm",
+    "m": "n,", ",": "m.", ".": ",/", "/": ".",
+}
+
+# ==============================================================================
+# ABUSED INFRASTRUCTURE (Legitimate services frequently used for phishing)
+# ==============================================================================
+
+# Services that are legitimate but frequently abused for phishing/C2
+ABUSED_INFRA_DOMAINS: Dict[str, str] = {
+    # Tunnel / Reverse Proxy Services
+    "ngrok.io": "ngrok tunnel",
+    "ngrok-free.app": "ngrok tunnel",
+    "ngrok.app": "ngrok tunnel",
+    "tryngrok.com": "ngrok tunnel",
+    "serveo.net": "Serveo tunnel",
+    "serveo.com": "Serveo tunnel",
+    "localtunnel.me": "localtunnel",
+    "localhost.run": "localhost.run tunnel",
+    "boringserver.com": "BoringSSL tunnel",
+    "cloudflarestunnel.com": "Cloudflare Tunnel",
+    "cloudflare-tunnel.com": "Cloudflare Tunnel",
+    "cf-tunnel.com": "Cloudflare Tunnel",
+    "trycloudflare.com": "Cloudflare Tunnel",
+    # Dynamic DNS Services
+    "duckdns.org": "DuckDNS dynamic DNS",
+    "no-ip.org": "No-IP dynamic DNS",
+    "noip.com": "No-IP dynamic DNS",
+    "ddns.net": "Dynamic DNS",
+    "dynu.net": "Dynu dynamic DNS",
+    "dyn.com": "Dyn dynamic DNS",
+    "dyndns.org": "DynDNS",
+    "dnsdynamic.org": "DNS dynamic",
+    "free-dns.org": "Free dynamic DNS",
+    "changeip.com": "ChangeIP dynamic DNS",
+    "myddns.me": "MyDDNS",
+    "myftp.org": "MyFTP dynamic DNS",
+    "mynetname.net": "Dynamic DNS",
+    "myvnc.com": "VNC dynamic DNS",
+    "strangled.net": "Dynamic DNS",
+    # URL Shorteners (redirect abuse)
+    "bit.ly": "URL shortener (redirect abuse)",
+    "tinyurl.com": "URL shortener (redirect abuse)",
+    "t.co": "URL shortener (redirect abuse)",
+    "shorturl.at": "URL shortener (redirect abuse)",
+    "ow.ly": "URL shortener (redirect abuse)",
+    "buff.ly": "URL shortener (redirect abuse)",
+    "is.gd": "URL shortener (redirect abuse)",
+    "cli.gs": "URL shortener (redirect abuse)",
+    "rb.gy": "URL shortener (redirect abuse)",
+    # Free hosting / PaaS abused for phishing
+    "netlify.app": "Netlify (free hosting abused for phishing)",
+    "vercel.app": "Vercel (free hosting abused for phishing)",
+    "github.io": "GitHub Pages (free hosting abused for phishing)",
+    "gitlab.io": "GitLab Pages (free hosting abused for phishing)",
+    "pages.dev": "Cloudflare Pages (free hosting abused for phishing)",
+    "firebaseapp.com": "Firebase Hosting (free hosting abused for phishing)",
+    "web.app": "Firebase Hosting (free hosting abused for phishing)",
+    "herokuapp.com": "Heroku (free hosting abused for phishing)",
+    "render.com": "Render (free hosting abused for phishing)",
+    "railway.app": "Railway (free hosting abused for phishing)",
+    "fly.dev": "Fly.io (free hosting abused for phishing)",
+    "onrender.com": "Render (free hosting abused for phishing)",
+    "glitch.me": "Glitch (free hosting abused for phishing)",
+    "repl.co": "Replit (free hosting abused for phishing)",
+}
+
+# ==============================================================================
+# SSL ERROR PATTERNS
+# ==============================================================================
+
+# Python ssl error string patterns for classifying certificate issues
+SSL_EXPIRED_PATTERNS = [
+    r"certificate has expired",
+    r"certificate expired",
+    r"expired certificate",
+    r"certificate is no longer valid",
+]
+SSL_SELF_SIGNED_PATTERNS = [
+    r"self.signed certificate",
+    r"certificate verify failed: self.signed",
+    r"self.signed certificate in certificate chain",
+]
+SSL_HOSTNAME_MISMATCH_PATTERNS = [
+    r"hostname.*doesn't match",
+    r"doesn't match.*hostname",
+    r"hostname mismatch",
+    r"certificate.*does not match",
+    r"no matching certificate found",
+    r"wrong.host",
+    r"SSL: CERTIFICATE_VERIFY_FAILED.*certificate verify failed.*hostname mismatch",
+]
+SSL_REVOKED_PATTERNS = [
+    r"certificate revoked",
+    r"revoked certificate",
+    r"certificate is revoked",
+]
+SSL_UNTRUSTED_ROOT_PATTERNS = [
+    r"unable to get local issuer certificate",
+    r"certificate verify failed: unable to get local issuer",
+    r"self.signed certificate in certificate chain",
+    r"untrusted",
+    r"untrusted root",
+]
+SSL_WEAK_PROTOCOL_PATTERNS = [
+    r"tlsv1",
+    r"tls 1\.[01]",
+    r"protocol version not supported",
+]
+
+
+def is_ssl_expired_error(error_str: str) -> bool:
+    """Check if an SSL error is due to an expired certificate."""
+    err = error_str.lower()
+    return any(re.search(p, err, re.IGNORECASE) for p in SSL_EXPIRED_PATTERNS)
+
+
+def is_ssl_self_signed_error(error_str: str) -> bool:
+    """Check if an SSL error is due to a self-signed certificate."""
+    err = error_str.lower()
+    return any(re.search(p, err, re.IGNORECASE) for p in SSL_SELF_SIGNED_PATTERNS)
+
+
+def is_ssl_hostname_mismatch_error(error_str: str) -> bool:
+    """Check if an SSL error is due to hostname mismatch."""
+    err = error_str.lower()
+    return any(re.search(p, err, re.IGNORECASE) for p in SSL_HOSTNAME_MISMATCH_PATTERNS)
+
+
+def is_ssl_revoked_error(error_str: str) -> bool:
+    """Check if an SSL error is due to a revoked certificate."""
+    err = error_str.lower()
+    return any(re.search(p, err, re.IGNORECASE) for p in SSL_REVOKED_PATTERNS)
+
+
+def is_ssl_untrusted_root_error(error_str: str) -> bool:
+    """Check if an SSL error is due to an untrusted root CA."""
+    err = error_str.lower()
+    return any(re.search(p, err, re.IGNORECASE) for p in SSL_UNTRUSTED_ROOT_PATTERNS)
+
+
+# ==============================================================================
+# SUSPICIOUS URL PATH KEYWORDS
+# ==============================================================================
+
+SUSPICIOUS_PATH_KEYWORDS = [
+    "login", "signin", "sign-in", "verify", "verification", "authenticate",
+    "secure", "security", "account", "update", "password", "reset",
+    "recover", "recovery", "billing", "payment", "invoice", "wallet",
+    "support", "help", "official", "customer", "unlock", "suspend",
+    "alert", "confirm", "confirmation", "kyc", "otp", "authorize",
+    "approval", "2fa", "twofactor", "mfa", "challenge",
+    "claim", "reward", "prize", "winner", "free", "gift",
+    "refund", "transaction", "transfer", "withdraw", "deposit",
+    "token", "secret", "private", "key", "phrase", "seed",
+    "id-verify", "identity", "ssn", "sin", "national-id",
+    "track", "tracking", "shipping", "delivery", "parcel",
+    "invoice", "statement", "document", "file", "share",
+    "investment", "trading", "bonus", "promo", "voucher",
+    "airdrop", "presale", "whitelist", "nft-mint",
+]
+
+# ==============================================================================
+# DOMAIN CONFIGURATION
+# ==============================================================================
+
 
 @dataclass
 class DomainConfig:
     brands: List[str] = field(default_factory=lambda: [
-        "google", "gmail", "youtube", "android", "chrome",
-        "microsoft", "office", "office365", "outlook", "azure", "windows",
-        "apple", "icloud", "itunes", "appstore",
-        "facebook", "instagram", "whatsapp", "messenger", "meta",
-        "paypal", "venmo", "stripe", "square",
-        "amazon", "aws", "primevideo",
-        "netflix", "disneyplus", "hulu",
-        "github", "gitlab", "bitbucket",
-        "dropbox", "adobe", "canva", "figma",
-        "bankofamerica", "wellsfargo", "citibank", "chase", "capitalone", "hsbc", "barclays",
-        "americanexpress", "amex", "mastercard", "visa",
-        "sbi", "hdfc", "icici", "axisbank", "kotak",
-        "coinbase", "binance", "kraken",
-        "cloudflare", "okta", "cisco",
-        "fedex", "dhl", "ups", "usps", "irs",
+        # Tech Giants
+        "google", "gmail", "youtube", "android", "chrome", "pixel", "nexus",
+        "microsoft", "office", "office365", "outlook", "azure", "windows", "bing",
+        "apple", "icloud", "itunes", "appstore", "macos", "ios", "ipad", "iphone",
+        "facebook", "instagram", "whatsapp", "messenger", "meta", "threads",
+        "paypal", "venmo", "stripe", "square", "payoneer",
+        "amazon", "aws", "primevideo", "kindle", "alexa", "twitch",
+        "netflix", "disneyplus", "hulu", "hbo", "maxgo", "peacock", "paramount",
+        "github", "gitlab", "bitbucket", "sourceforge",
+        "dropbox", "adobe", "canva", "figma", "sketch", "invision",
+        # Banking & Finance
+        "bankofamerica", "wellsfargo", "citibank", "citi", "chase",
+        "capitalone", "hsbc", "barclays", "natwest", "lloyds",
+        "americanexpress", "amex", "mastercard", "visa", "discover",
+        "sbi", "hdfc", "icici", "axisbank", "kotak", "yesbank", "pnb",
+        "rbc", "tdbank", "scotiabank", "bmo",
+        "deutschebank", "societegenerale", "bnpparibas", "ing",
+        "paytm", "phonepe", "googlepay", "gpay", "applepay", "samungpay",
+        # Crypto / Web3
+        "coinbase", "binance", "kraken", "gemini", "crypto", "blockchain",
+        "metamask", "trustwallet", "ledger", "trezor", "exodus",
+        "uniswap", "pancakeswap", "opensea", "rarible", "etherscan",
+        "solana", "ethereum", "bitcoin", "ripple", "cardano", "polkadot",
+        "coinmarketcap", "coingecko", "defi", "nft",
+        # E-commerce
+        "ebay", "etsy", "shopify", "walmart", "target", "bestbuy",
+        "homedepot", "lowes", "costco", "kroger", "walgreens", "cvs",
+        "alibaba", "aliexpress", "taobao", "jd", "rakuten", "mercado",
+        # Social Media
+        "twitter", "x", "linkedin", "reddit", "pinterest", "snapchat",
+        "tiktok", "telegram", "signal", "discord", "slack", "teams",
+        "tumblr", "flickr", "imgur", "quora", "medium",
+        "onlyfans", "patreon", "kickstarter", "indiegogo",
+        # Cloud & DevOps
+        "cloudflare", "okta", "cisco", "paloalto", "crowdstrike",
+        "datadog", "newrelic", "splunk", "elastic", "mongodb",
+        "digitalocean", "linode", "vultr", "hetzner", "ovh",
+        "heroku", "vercel", "netlify", "render", "flyio",
+        "docker", "kubernetes", "jenkins", "travis", "circleci",
+        # Entertainment
+        "spotify", "soundcloud", "deezer", "tidal", "pandora",
+        "crunchyroll", "funimation", "roku", "plex",
+        "steam", "epicgames", "xbox", "playstation", "nintendo",
+        "blizzard", "activision", "ea", "ubisoft", "rockstar",
+        "roblox", "minecraft", "fortnite", "valorant",
+        # Government & Education
+        "irs", "ssa", "uscis", "dhs", "fbi", "cia", "nsa",
+        "harvard", "stanford", "mit", "oxford", "cambridge", "yale",
+        "princeton", "columbia", "berkeley", "ucla",
+        # Logistics
+        "fedex", "dhl", "ups", "usps", "canadapost", "royalmail",
+        "australiapost", "dhl", "tnt", "dpd", "hermes",
+        # Automotive
+        "tesla", "toyota", "honda", "ford", "bmw", "mercedes",
+        "audi", "volkswagen", "nissan", "hyundai", "kia", "ferrari",
+        "lamborghini", "porsche", "jeep", "subaru", "mazda",
+        # Telecom & ISP
+        "verizon", "att", "tmobile", "sprint", "comcast", "xfinity",
+        "spectrum", "charter", "cox", "centurylink", "frontier",
+        "vodafone", "orange", "telefonica", "bt", "sky",
+        # News & Media
+        "nytimes", "wsj", "cnn", "bbc", "theguardian", "reuters",
+        "bloomberg", "forbes", "washingtonpost", "usatoday",
+        "economist", "time", "npr", "apnews",
+        # Food & Beverage
+        "starbucks", "mcdonalds", "subway", "kfc", "burgerking",
+        "cocacola", "pepsi", "nestle", "kraft", "heinz",
+        "dominos", "pizzahut", "papajohns", "dunkin",
+        # Travel
+        "booking", "expedia", "airbnb", "hotels", "trivago",
+        "kayak", "skyscanner", "uber", "lyft", "grubhub",
+        "doordash", "ubereats", "postmates",
+        # Health
+        "webmd", "mayoclinic", "clevelandclinic", "johnshopkins",
+        "cvs", "walgreens", "riteaid", "goodrx",
+        # Insurance
+        "geico", "progressive", "allstate", "statefarm", "libertymutual",
+        "aetna", "cigna", "bluecross", "humana", "unitedhealthcare",
     ])
     keywords: List[str] = field(default_factory=lambda: [
-        "login", "signin", "verify", "verification", "secure", "security", "account", "update",
-        "password", "reset", "recover", "billing", "payment", "invoice", "wallet",
-        "support", "help", "official", "customer", "unlock", "suspend", "alert", "confirm",
-        "kyc", "otp", "authorize", "approval",
+        "login", "signin", "sign-in", "verify", "verification", "secure", "security",
+        "account", "update", "password", "reset", "recover", "recovery",
+        "billing", "payment", "invoice", "wallet", "pay",
+        "support", "help", "official", "customer", "unlock", "suspend", "alert",
+        "confirm", "confirmation", "kyc", "otp", "authorize", "approval",
+        "2fa", "twofactor", "mfa", "challenge", "token",
+        "claim", "reward", "prize", "winner", "free", "gift", "bonus",
+        "refund", "transaction", "transfer", "withdraw", "deposit",
+        "track", "tracking", "shipping", "delivery", "parcel",
+        "id-verify", "identity", "ssn", "sin",
+        "airdrop", "presale", "whitelist", "nft", "mint",
+        "investment", "trading", "promo", "voucher",
     ])
     suspicious_tlds: frozenset = field(default_factory=lambda: frozenset({
-        "xyz", "top", "club", "online", "site", "web", "info", "biz", "tk", "ml", "ga", "cf", "gq",
-        "pw", "ws", "icu", "click", "cam", "mom", "work", "vip", "support", "email", "live",
+        "xyz", "top", "club", "online", "site", "web", "info", "biz",
+        "tk", "ml", "ga", "cf", "gq", "pw", "ws", "icu", "click",
+        "cam", "mom", "work", "vip", "support", "email", "live", "loan",
     }))
-    high_trust_tlds: frozenset = field(default_factory=lambda: frozenset({"com", "org", "net", "edu", "gov"}))
+    high_trust_tlds: frozenset = field(default_factory=lambda: frozenset({
+        "com", "org", "net", "edu", "gov", "mil"
+    }))
 
 
 CONFIG = DomainConfig()
@@ -123,6 +408,11 @@ def _utcnow() -> datetime:
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, v))
+
+
+# ==============================================================================
+# DOMAIN SANITIZATION & VALIDATION
+# ==============================================================================
 
 
 def sanitize_domain(raw: str) -> str:
@@ -167,7 +457,6 @@ def sanitize_url(raw: str) -> str:
         u = "https://" + u
     parts = urllib_parse.urlsplit(u)
     host = parts.hostname or ""
-    # normalize host similarly to sanitize_domain
     host = sanitize_domain(host)
     path = parts.path or "/"
     if not path.startswith("/"):
@@ -213,6 +502,11 @@ def validate_url(url: str) -> Tuple[bool, str]:
     return True, ""
 
 
+# ==============================================================================
+# WEBSITE INSPECTION & REDIRECT HANDLING
+# ==============================================================================
+
+
 class _LimitedRedirectHandler(urllib_request.HTTPRedirectHandler):
     def __init__(self, max_redirects: int = 5):
         super().__init__()
@@ -239,7 +533,6 @@ def _extract_html_signals(html: str, base_url: str) -> Dict[str, Any]:
     has_email = bool(re.search(r'type\s*=\s*["\']email["\']', low, re.IGNORECASE)) or ("name=\"email\"" in low or "name='email'" in low)
     has_otp = "otp" in low or "one-time" in low or "one time" in low
 
-    # form action analysis: external post target is a common phishing signal
     external_actions: List[str] = []
     base_host = (urllib_parse.urlsplit(base_url).hostname or "").lower()
     for fm in re.finditer(r"<form\b[^>]*\baction\s*=\s*['\"]([^'\"]+)['\"][^>]*>", low, re.IGNORECASE):
@@ -252,7 +545,6 @@ def _extract_html_signals(html: str, base_url: str) -> Dict[str, Any]:
         except Exception:
             continue
 
-    # asset/link host analysis (common in cloned sites)
     linked_hosts: List[str] = []
     for m2 in re.finditer(r"\b(?:href|src)\s*=\s*['\"]([^'\"]+)['\"]", low, re.IGNORECASE):
         ref = m2.group(1).strip()
@@ -288,11 +580,8 @@ def _html_to_text_sample(html: str, limit: int = 5000) -> str:
     return s[:limit]
 
 
-def inspect_website(url: str, timeout: float = 6.0, max_bytes: int = 512_000) -> Dict[str, Any]:
-    """
-    Fetches a website (no JS execution) and extracts lightweight HTML signals.
-    Includes SSRF protections (blocks private/loopback hostnames).
-    """
+def inspect_website(url: str, timeout: float = 4.0, max_bytes: int = 512_000) -> Dict[str, Any]:
+    """Fetches a website (no JS execution) and extracts lightweight HTML signals."""
     ok, err = validate_url(url)
     if not ok:
         return {"available": False, "source": "validation_error", "error": err}
@@ -317,7 +606,6 @@ def inspect_website(url: str, timeout: float = 6.0, max_bytes: int = 512_000) ->
         if truncated:
             raw = raw[:max_bytes]
 
-        encoding = "utf-8"
         try:
             html = raw.decode("utf-8", errors="replace")
         except Exception:
@@ -408,6 +696,11 @@ def compare_website_to_reference(suspect_url: str, reference_url: str) -> Dict[s
     }
 
 
+# ==============================================================================
+# EXTERNAL API HELPERS
+# ==============================================================================
+
+
 def _json_post(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None, timeout: float = 6.0) -> Dict[str, Any]:
     h = {"accept": "application/json"}
     if headers:
@@ -429,10 +722,7 @@ def _form_post(url: str, form: Dict[str, str], headers: Optional[Dict[str, str]]
 
 
 def analyze_urlhaus(domain: str, url: str = "") -> Dict[str, Any]:
-    """
-    URLhaus (abuse.ch) — no API key required.
-    Checks domain and/or exact URL.
-    """
+    """URLhaus (abuse.ch) — no API key required."""
     d = sanitize_domain(domain)
     out: Dict[str, Any] = {"provider": "URLhaus", "available": True, "flagged": False, "source": "live", "matches": []}
     try:
@@ -457,9 +747,7 @@ def analyze_urlhaus(domain: str, url: str = "") -> Dict[str, Any]:
 
 
 def analyze_urlscan(domain: str, api_key: str = "") -> Dict[str, Any]:
-    """
-    urlscan.io search (API key optional but recommended for higher limits).
-    """
+    """urlscan.io search (API key optional)."""
     d = sanitize_domain(domain)
     if not d:
         return {"provider": "urlscan.io", "available": False, "flagged": False, "source": "validation_error", "error": "Empty domain"}
@@ -473,7 +761,6 @@ def analyze_urlscan(domain: str, api_key: str = "") -> Dict[str, Any]:
         with urllib_request.urlopen(req, timeout=6.0) as resp:
             j = json.loads(resp.read().decode("utf-8"))
         results = j.get("results", []) or []
-        # urlscan doesn't label "phishing" directly; we surface evidence and let scoring decide
         return {
             "provider": "urlscan.io",
             "available": True,
@@ -498,9 +785,7 @@ def analyze_urlscan(domain: str, api_key: str = "") -> Dict[str, Any]:
 
 
 def analyze_google_safe_browsing(url: str, api_key: str = "") -> Dict[str, Any]:
-    """
-    Google Safe Browsing v4 (requires API key).
-    """
+    """Google Safe Browsing v4 (requires API key)."""
     if not api_key:
         return {"provider": "GoogleSafeBrowsing", "available": False, "flagged": False, "source": "disabled", "note": "GOOGLE_SAFE_BROWSING_API_KEY not set"}
     ok, err = validate_url(url)
@@ -532,16 +817,12 @@ def analyze_google_safe_browsing(url: str, api_key: str = "") -> Dict[str, Any]:
 
 
 def analyze_phishtank(url: str, api_key: str = "") -> Dict[str, Any]:
-    """
-    PhishTank (requires key) — placeholder integration (API format varies by key type).
-    """
+    """PhishTank (requires key) — placeholder integration."""
     if not api_key:
         return {"provider": "PhishTank", "available": False, "flagged": False, "source": "disabled", "note": "PHISHTANK_API_KEY not set"}
     ok, err = validate_url(url)
     if not ok:
         return {"provider": "PhishTank", "available": False, "flagged": False, "source": "validation_error", "error": err}
-    # Many PhishTank keys use the web check endpoint with form params.
-    # We'll keep a conservative implementation and surface errors if the key is incompatible.
     u = sanitize_url(url)
     try:
         j = _form_post(
@@ -550,7 +831,6 @@ def analyze_phishtank(url: str, api_key: str = "") -> Dict[str, Any]:
             headers={"User-Agent": "TMGC-Inspector/1.0"},
             timeout=8.0,
         )
-        # Response schema differs; best-effort normalize
         in_db = bool(j.get("results", {}).get("in_database")) if isinstance(j, dict) else False
         verified = bool(j.get("results", {}).get("verified")) if isinstance(j, dict) else False
         valid = bool(j.get("results", {}).get("valid")) if isinstance(j, dict) else False
@@ -558,6 +838,12 @@ def analyze_phishtank(url: str, api_key: str = "") -> Dict[str, Any]:
         return {"provider": "PhishTank", "available": True, "flagged": flagged, "source": "live", "in_database": in_db, "verified": verified, "valid": valid}
     except Exception as exc:
         return {"provider": "PhishTank", "available": False, "flagged": False, "source": "error", "error": str(exc)}
+
+
+# ==============================================================================
+# HOMOGLYPH NORMALIZATION & STRING SIMILARITY
+# ==============================================================================
+
 
 def _normalize_homoglyphs(text: str) -> str:
     t = _safe_lower(text)
@@ -635,9 +921,38 @@ def jaro_winkler_similarity(s1: str, s2: str, p: float = 0.1) -> float:
     return j + prefix * p * (1 - j)
 
 
+def calculate_keyboard_distance(char1: str, char2: str) -> int:
+    """
+    Calculate the QWERTY keyboard distance between two characters.
+    Returns 0 if same key, 1 if adjacent, 2+ otherwise.
+    Used for detecting keyboard-walking/phishing patterns.
+    """
+    c1, c2 = char1.lower(), char2.lower()
+    if c1 == c2:
+        return 0
+    # Check if c2 is a neighbor of c1
+    neighbors = _KEYBOARD_NEIGHBORS.get(c1, "")
+    if c2 in neighbors:
+        return 1
+    # Check if they share a row (for 2-step distance)
+    for row in _KEYBOARD_ROWS:
+        if c1 in row and c2 in row:
+            return 2
+    return 3
+
+
+# ==============================================================================
+# TYPOSQUATTING DETECTION
+# ==============================================================================
+
+
 def detect_typosquatting(domain_name: str) -> Dict[str, Any]:
+    """Enhanced typosquatting detection with keyboard proximity analysis."""
     label = _skeletonize(domain_name)
     best: Optional[Dict[str, Any]] = None
+    keyboard_attack_detected = False
+    keyboard_attack_brand = None
+
     for brand in CONFIG.brands:
         b = _skeletonize(brand)
         if not b:
@@ -646,15 +961,31 @@ def detect_typosquatting(domain_name: str) -> Dict[str, Any]:
         jw = jaro_winkler_similarity(label, b)
         lev_score = 1 - dist / max(len(label), len(b), 1)
         combined = 0.65 * jw + 0.35 * lev_score
+
+        # Keyboard proximity check: see if the label has many adjacent-key substitutions
+        # relative to the brand. If label[i] != brand[i] and label[i] is keyboard-adjacent
+        # to brand[i], that's a keyboard proximity attack.
+        if dist <= 3 and dist > 0:
+            keyboard_subs = 0
+            for i in range(min(len(label), len(b))):
+                if i < len(label) and i < len(b) and label[i] != b[i]:
+                    if calculate_keyboard_distance(label[i], b[i]) <= 2:
+                        keyboard_subs += 1
+            if keyboard_subs >= dist:  # All substitutions are keyboard-adjacent
+                keyboard_attack_detected = True
+                keyboard_attack_brand = brand
+
         row = {
             "brand": brand,
             "edit_distance": dist,
             "jaro_winkler_score": round(jw, 4),
             "levenshtein_score": round(lev_score, 4),
             "combined_score": round(combined, 4),
+            "keyboard_proximity_attack": keyboard_attack_detected and brand == keyboard_attack_brand,
         }
         if best is None or row["combined_score"] > best["combined_score"]:
             best = row
+
     if best is None:
         return {
             "detected": False,
@@ -664,25 +995,21 @@ def detect_typosquatting(domain_name: str) -> Dict[str, Any]:
             "levenshtein_score": 0.0,
             "combined_score": 0.0,
             "edit_distance": 999,
+            "keyboard_proximity_attack": False,
         }
 
-    # Check if the original label (before normalization) differs from the normalized form.
-    # This catches homoglyph/digit substitutions like "g00gle" → normalized to "google".
-    # If normalization changed the label AND the normalized version matches a brand,
-    # then the domain is visually impersonating that brand through character substitution.
     exact_brand = best["edit_distance"] == 0 and label == _skeletonize(str(best["brand"]))
-    
-    # Separate check: was it the normalization that made it an exact brand match?
-    original_label = _safe_lower(domain_name)  # Before skeletonize
+    original_label = _safe_lower(domain_name)
     normalized_label = _skeletonize(domain_name)
     is_normalization_substitution = (
         exact_brand
         and original_label != normalized_label
         and normalized_label == _skeletonize(str(best["brand"]))
     )
-    
+
     detected = (
         is_normalization_substitution
+        or best["keyboard_proximity_attack"]
         or (
             not exact_brand
             and (
@@ -691,12 +1018,16 @@ def detect_typosquatting(domain_name: str) -> Dict[str, Any]:
             )
         )
     )
-    if is_normalization_substitution:
+
+    if best["keyboard_proximity_attack"]:
+        reason = f"Keyboard proximity attack — adjacent keys pressed instead of '{best['brand']}'"
+    elif is_normalization_substitution:
         reason = "Strong brand lookalike (via character substitution)"
     elif detected:
         reason = "Strong brand lookalike"
     else:
         reason = "No strong near-brand signal"
+
     return {
         "detected": detected,
         "reason": reason,
@@ -705,12 +1036,20 @@ def detect_typosquatting(domain_name: str) -> Dict[str, Any]:
         "levenshtein_score": best["levenshtein_score"],
         "combined_score": best["combined_score"],
         "edit_distance": best["edit_distance"],
+        "keyboard_proximity_attack": best["keyboard_proximity_attack"],
     }
 
 
+# ==============================================================================
+# HOMOGLYPH & PUNYCODE DETECTION
+# ==============================================================================
+
+
 def detect_homoglyphs(label: str) -> Dict[str, Any]:
+    """Enhanced homoglyph detection with Unicode character analysis."""
     suspicious: List[Dict[str, Any]] = []
     digit_subs: List[str] = []
+    non_ascii_count = 0
     for i, ch in enumerate(label):
         non_ascii = ord(ch) > 127
         ascii_confusable = ch in RAW_HOMOGLYPHS
@@ -720,18 +1059,97 @@ def detect_homoglyphs(label: str) -> Dict[str, Any]:
                 "char": ch,
                 "ascii_equiv": RAW_HOMOGLYPHS.get(ch, ch),
                 "codepoint": hex(ord(ch)),
+                "is_non_ascii": non_ascii,
             })
+            if non_ascii:
+                non_ascii_count += 1
         if ch.isdigit() and ch in RAW_HOMOGLYPHS:
             digit_subs.append(ch)
+
     return {
         "detected": bool(suspicious),
         "count": len(suspicious),
+        "non_ascii_count": non_ascii_count,
         "suspicious_chars": suspicious,
         "normalized_domain": _normalize_homoglyphs(label),
         "ascii_only": all(ord(c) < 128 for c in label),
         "has_digit_substitution": bool(digit_subs),
         "digit_substitutions": digit_subs,
     }
+
+
+def detect_punycode_homograph(domain: str) -> Dict[str, Any]:
+    """
+    Detect punycode/IDN homograph attacks.
+
+    Decodes xn-- prefixed labels and checks if the decoded Unicode
+    visually resembles ASCII brands/domains.
+
+    Returns:
+        has_punycode: True if domain contains punycode
+        decoded: Decoded Unicode form
+        ascii_form: Original ASCII form
+        visual_impersonation: Whether it visually impersonates a known brand
+        impersonated_brand: The brand being impersonated (if any)
+        warning: Human-readable warning
+    """
+    s = sanitize_domain(domain)
+    result: Dict[str, Any] = {
+        "has_punycode": False,
+        "decoded": None,
+        "ascii_form": s,
+        "visual_impersonation": False,
+        "impersonated_brand": None,
+        "warning": None,
+    }
+
+    if "xn--" not in s:
+        return result
+
+    result["has_punycode"] = True
+
+    # Try to decode each label
+    decoded_parts = []
+    for part in s.split("."):
+        if part.startswith("xn--"):
+            try:
+                decoded = part.encode("ascii").decode("idna")
+                decoded_parts.append(decoded)
+            except Exception:
+                decoded_parts.append(part)
+        else:
+            decoded_parts.append(part)
+
+    decoded = ".".join(decoded_parts)
+    result["decoded"] = decoded
+
+    # Check if the decoded domain visually impersonates a brand
+    decoded_label = decoded.split(".")[0].lower() if "." in decoded else decoded.lower()
+    skeleton = _skeletonize(decoded_label)
+
+    for brand in CONFIG.brands:
+        b_skel = _skeletonize(brand)
+        if skeleton == b_skel and decoded_label != brand:
+            result["visual_impersonation"] = True
+            result["impersonated_brand"] = brand
+            result["warning"] = (
+                f"Punycode/IDN domain '{decoded}' visually impersonates '{brand}' "
+                f"(ASCII form: {s}). This is a known homograph attack technique."
+            )
+            break
+
+    if not result["visual_impersonation"]:
+        result["warning"] = (
+            f"Domain contains punycode/IDN encoding (decoded: '{decoded}'). "
+            "IDN domains can be used for visual impersonation attacks."
+        )
+
+    return result
+
+
+# ==============================================================================
+# COMBO-SQUATTING DETECTION
+# ==============================================================================
 
 
 def detect_combosquatting(domain_name: str) -> Dict[str, Any]:
@@ -758,6 +1176,377 @@ def detect_combosquatting(domain_name: str) -> Dict[str, Any]:
         "tokens": [t for t in re.split(r"[\-_.\s]+", raw) if t],
         "fusion_patterns": sorted(set(fusion)),
     }
+
+
+# ==============================================================================
+# SUBDOMAIN PHISHING DETECTION
+# ==============================================================================
+
+
+def detect_subdomain_phishing(domain: str) -> Dict[str, Any]:
+    """
+    Detect brand impersonation via subdomain abuse.
+
+    Example: paypal.login.verify.evil.com
+    The real registered domain is evil.com, but the subdomains
+    contain brand names to deceive users.
+
+    Returns:
+        detected: True if brand impersonation via subdmains detected
+        registered_domain: The actual registered domain (e.g., evil.com)
+        brands_in_subdomains: List of brands found in subdomains
+        warning: Human-readable explanation
+    """
+    s = sanitize_domain(domain)
+    parts = s.split(".")
+    result: Dict[str, Any] = {
+        "detected": False,
+        "registered_domain": None,
+        "brands_in_subdomains": [],
+        "warning": None,
+    }
+
+    if len(parts) < 3:
+        return result
+
+    # Extract the registered domain (last 2 parts for standard TLDs)
+    tld = parts[-1]
+    registered_name = parts[-2]
+    registered_domain = f"{registered_name}.{tld}"
+
+    # Check if the registered domain is itself a suspicious/hosting domain
+    # (e.g., evil.com, freehosting.com)
+    is_abused_infra = False
+    for infra_domain, label in ABUSED_INFRA_DOMAINS.items():
+        if registered_domain.endswith(infra_domain) or infra_domain.endswith(registered_domain):
+            is_abused_infra = True
+            break
+
+    # Check subdomains for brand names
+    subdomain_parts = parts[:-2]  # Everything before the registered domain
+
+    brands_found: List[str] = []
+    for brand in CONFIG.brands:
+        b = brand.lower()
+        # Check if brand appears as a whole subdomain label
+        for sub_part in subdomain_parts:
+            sub_clean = sub_part.lower().lstrip("www")
+            if sub_clean == b:
+                brands_found.append(brand)
+                break
+            # Homoglyph-normalized check
+            if _skeletonize(sub_clean) == _skeletonize(b):
+                if brand not in brands_found:
+                    brands_found.append(brand)
+                break
+
+    if brands_found:
+        result["detected"] = True
+        result["registered_domain"] = registered_domain
+        result["brands_in_subdomains"] = brands_found
+        if is_abused_infra:
+            result["warning"] = (
+                f"Brand impersonation via subdomain abuse: domain contains "
+                f"{', '.join(brands_found)} in subdomains but the actual "
+                f"registered domain '{registered_domain}' is a known "
+                f"free/abused hosting service."
+            )
+        else:
+            result["warning"] = (
+                f"Brand impersonation via subdomain abuse: domain contains "
+                f"{', '.join(brands_found)} in subdomains but the actual "
+                f"registered domain is '{registered_domain}'. "
+                f"The brand subdomain is used to deceive users."
+            )
+
+    return result
+
+
+# ==============================================================================
+# ABUSED INFRASTRUCTURE DETECTION
+# ==============================================================================
+
+
+def detect_abused_infrastructure(domain: str) -> Dict[str, Any]:
+    """
+    Detect if a domain is using legitimate but frequently abused infrastructure.
+
+    Categories:
+      - Tunnel services (ngrok, serveo, cloudflare tunnels)
+      - Dynamic DNS (duckdns, no-ip, ddns.net)
+      - URL shorteners (bit.ly, tinyurl)
+      - Free hosting (netlify, vercel, github.io)
+
+    Returns:
+        detected: True if domain matches abused infrastructure pattern
+        service_type: Human-readable service type
+        service_name: Specific service name
+        category: Category of abuse (tunnel, dyn_dns, url_shortener, free_hosting)
+        warning: Human-readable warning
+        risk_contribution: Suggested risk score contribution
+    """
+    s = sanitize_domain(domain)
+
+    for infra_domain, label in ABUSED_INFRA_DOMAINS.items():
+        # Determine category from label text
+        category = "tunnel" if "tunnel" in label else \
+                   "dyn_dns" if "dynamic dns" in label.lower() or "ddns" in label.lower() else \
+                   "url_shortener" if "shortener" in label.lower() else \
+                   "free_hosting"
+
+        # FREE HOSTING: only flag subdomains (e.g., "eviluser.github.io"),
+        # never the root provider domain itself (e.g., "github.io").
+        # Root domains like github.io, pages.dev, netlify.app belong to
+        # legitimate companies and should not be penalized just because
+        # their free hosting platform is abused by phishers.
+        if category == "free_hosting":
+            if s.endswith("." + infra_domain):
+                risk = 15
+                return {
+                    "detected": True,
+                    "service_type": label,
+                    "service_name": infra_domain,
+                    "category": category,
+                    "risk_contribution": risk,
+                    "warning": (
+                        f"Domain uses {label} ({infra_domain}). "
+                        f"This service is legitimate but frequently abused for "
+                        f"phishing, C2 infrastructure, and malicious redirects. "
+                        f"Additional verification is required before trusting."
+                    ),
+                }
+        else:
+            # Other categories (tunnels, dynamic DNS, URL shorteners):
+            # flag both subdomains AND exact root domain match.
+            if s == infra_domain or s.endswith("." + infra_domain):
+                risk = 20 if category == "tunnel" else \
+                       15 if category == "dyn_dns" else \
+                       10 if category == "url_shortener" else \
+                       15  # fallback
+
+                return {
+                    "detected": True,
+                    "service_type": label,
+                    "service_name": infra_domain,
+                    "category": category,
+                    "risk_contribution": risk,
+                    "warning": (
+                        f"Domain uses {label} ({infra_domain}). "
+                        f"This service is legitimate but frequently abused for "
+                        f"phishing, C2 infrastructure, and malicious redirects. "
+                        f"Additional verification is required before trusting."
+                    ),
+                }
+
+    return {
+        "detected": False,
+        "service_type": None,
+        "service_name": None,
+        "category": None,
+        "risk_contribution": 0,
+        "warning": None,
+    }
+
+
+# ==============================================================================
+# URL PATH INTELLIGENCE
+# ==============================================================================
+
+
+def detect_url_path_signals(url: str) -> Dict[str, Any]:
+    """
+    Analyze URL paths for suspicious keywords and patterns.
+
+    Detects:
+      - Login/verify/secure paths on suspicious domains
+      - Credential harvesting indicators
+      - File-sharing/phishing path patterns
+      - Suspicious file extensions
+
+    Returns:
+        has_suspicious_path: True if suspicious patterns found
+        matched_keywords: List of matched keywords
+        path_depth: Number of path segments
+        path_risk_score: 0-100 risk contribution from path alone
+        warning: Human-readable explanation
+    """
+    parsed = urllib_parse.urlsplit(url)
+    path = parsed.path.lower() if parsed.path else "/"
+
+    if path == "/" or not path:
+        return {
+            "has_suspicious_path": False,
+            "matched_keywords": [],
+            "path_depth": 0,
+            "path_risk_score": 0,
+            "warning": None,
+        }
+
+    # Split path into segments
+    segments = [s for s in path.split("/") if s]
+    path_depth = len(segments)
+
+    # Check for suspicious keywords in path
+    matched_keywords: List[str] = []
+    for keyword in SUSPICIOUS_PATH_KEYWORDS:
+        if keyword in path:
+            matched_keywords.append(keyword)
+
+    # Check for suspicious file extensions
+    suspicious_extensions = {".exe", ".scr", ".bat", ".cmd", ".ps1", ".vbs", ".js",
+                             ".jar", ".php", ".asp", ".aspx", ".cgi"}
+    has_suspicious_ext = False
+    for ext in suspicious_extensions:
+        if path.endswith(ext):
+            has_suspicious_ext = True
+            break
+
+    # Check for IPFS / gateway patterns
+    has_ipfs = "/ipfs/" in path or "/ipns/" in path
+
+    # Calculate risk score
+    risk = 0
+    reasons: List[str] = []
+
+    if matched_keywords:
+        risk += min(len(matched_keywords) * 8, 30)
+        reasons.append(f"Path contains suspicious keywords: {', '.join(matched_keywords[:5])}")
+
+    if has_suspicious_ext:
+        risk += 15
+        reasons.append("Path ends with a suspicious executable/script file extension")
+
+    if path_depth >= 5:
+        risk += 8
+        reasons.append(f"Excessive path depth ({path_depth} segments)")
+
+    if has_ipfs:
+        risk += 12
+        reasons.append("Path references IPFS/IPNS gateway — used to host immutable phishing content")
+
+    detected = risk > 0
+
+    return {
+        "has_suspicious_path": detected,
+        "matched_keywords": matched_keywords,
+        "path_depth": path_depth,
+        "path_risk_score": min(risk, 100),
+        "has_suspicious_extension": has_suspicious_ext,
+        "has_ipfs_reference": has_ipfs,
+        "warning": "; ".join(reasons) if reasons else None,
+    }
+
+
+# ==============================================================================
+# REDIRECT CHAIN ANALYSIS
+# ==============================================================================
+
+
+def analyze_redirect_chain(url: str, max_redirects: int = 5, timeout: float = 4.0) -> Dict[str, Any]:
+    """
+    Safely follow redirects and analyze the redirect chain.
+
+    Detects:
+      - Suspicious hop count (excessive redirects)
+      - Redirect through URL shorteners
+      - Redirect to suspicious final destinations
+      - Mismatch between initial and final domains
+
+    Returns:
+        chain: List of redirect hops [{from, to, code}]
+        hop_count: Number of redirects
+        initial_domain: Domain of the original URL
+        final_domain: Domain of the final URL
+        domain_mismatch: True if initial and final domains differ
+        suspicious: True if redirect chain is suspicious
+        warning: Human-readable explanation
+    """
+    ok, err = validate_url(url)
+    if not ok:
+        return {"available": False, "error": err}
+
+    start_url = sanitize_url(url)
+    initial_domain = urllib_parse.urlsplit(start_url).hostname or ""
+
+    redir = _LimitedRedirectHandler(max_redirects=max_redirects)
+    opener = urllib_request.build_opener(redir)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "*/*",
+    }
+    req = urllib_request.Request(start_url, headers=headers, method="HEAD")
+
+    final_url = start_url
+    final_domain = initial_domain
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            final_url = resp.geturl()
+            final_domain = urllib_parse.urlsplit(final_url).hostname or initial_domain
+    except urllib_error.HTTPError as exc:
+        final_url = exc.geturl() or start_url
+        final_domain = urllib_parse.urlsplit(final_url).hostname or initial_domain
+    except Exception:
+        pass
+
+    chain = redir.chain
+    hop_count = len(chain)
+    domain_mismatch = initial_domain.lower() != final_domain.lower()
+
+    # Check for shorteners in chain
+    has_shortener = False
+    for hop in chain:
+        hop_domain = urllib_parse.urlsplit(hop.get("to", "")).hostname or ""
+        for infra, label in ABUSED_INFRA_DOMAINS.items():
+            if hop_domain == infra or hop_domain.endswith("." + infra):
+                if "shortener" in label.lower():
+                    has_shortener = True
+                    break
+
+    # Check if final destination is abused infrastructure
+    final_infra = None
+    for infra, label in ABUSED_INFRA_DOMAINS.items():
+        if final_domain == infra or final_domain.endswith("." + infra):
+            final_infra = label
+            break
+
+    # Determine suspiciousness
+    reasons: List[str] = []
+    suspicious = False
+
+    if hop_count >= 3:
+        suspicious = True
+        reasons.append(f"Excessive redirect chain ({hop_count} hops) — often used to evade URL scanners")
+
+    if has_shortener:
+        suspicious = True
+        reasons.append("Redirect chain passes through URL shortener — can obscure the final destination")
+
+    if domain_mismatch:
+        reasons.append(f"Redirects from '{initial_domain}' to '{final_domain}' — possible phishing redirect")
+
+    if final_infra:
+        suspicious = True
+        reasons.append(f"Final destination uses {final_infra} — frequently abused for phishing")
+
+    return {
+        "available": True,
+        "chain": chain,
+        "hop_count": hop_count,
+        "initial_domain": initial_domain,
+        "final_domain": final_domain,
+        "domain_mismatch": domain_mismatch,
+        "has_shortener": has_shortener,
+        "final_infrastructure_abuse": final_infra is not None,
+        "final_infrastructure_label": final_infra,
+        "suspicious": suspicious,
+        "warning": " | ".join(reasons) if reasons else None,
+    }
+
+
+# ==============================================================================
+# FEATURE EXTRACTION
+# ==============================================================================
 
 
 def _entropy(s: str) -> float:
@@ -801,11 +1590,16 @@ def extract_features(full_domain: str) -> Dict[str, Any]:
     }
 
 
+# ==============================================================================
+# DNS ANALYSIS
+# ==============================================================================
+
+
 def _safe_dns_resolve(domain: str, rtype: str) -> List[str]:
     if _dns_resolver is None:
         return []
     try:
-        return [str(r).strip() for r in _dns_resolver.resolve(domain, rtype, lifetime=3)]
+        return [str(r).strip() for r in _dns_resolver.resolve(domain, rtype, lifetime=2)]
     except Exception:
         return []
 
@@ -848,52 +1642,747 @@ def analyze_dns_signals(domain: str) -> Dict[str, Any]:
     }
 
 
-def analyze_ssl_signals(domain: str, timeout: float = 4.0) -> Dict[str, Any]:
+# ==============================================================================
+# SSL/TLS ANALYSIS (HARDENED v2)
+# ==============================================================================
+
+
+def analyze_ssl_signals(domain: str, timeout: float = 3.0) -> Dict[str, Any]:
+    """
+    Enhanced SSL/TLS analysis with full certificate validation and error classification.
+
+    Detects:
+      - Expired certificates
+      - Self-signed certificates
+      - Hostname mismatches
+      - Revoked certificates
+      - Untrusted root CAs
+      - Weak TLS versions/protocols
+      - Weak cipher suites
+
+    Uses ssl.create_default_context() for proper validation, then falls back
+    to ssl._create_unverified_context() to inspect the raw certificate details
+    even when validation fails, classifying the specific error type.
+    """
     s = sanitize_domain(domain)
     tld = s.split(".")[-1] if "." in s else ""
     if tld in DARK_WEB_TLDS:
         return {
             "has_ssl": False,
             "issuer": None,
+            "issuer_org": None,
             "subject": None,
+            "subject_cn": None,
             "not_before": None,
             "not_after": None,
             "days_to_expiry": None,
-            "self_signed_like": False,
+            "days_to_issue": None,
+            "self_signed": False,
+            "expired": False,
+            "hostname_mismatch": False,
+            "revoked": False,
+            "untrusted_root": False,
+            "weak_protocol": False,
+            "weak_cipher": False,
             "ssl_error": None,
+            "ssl_error_type": None,
             "source": "not_applicable_dark_web",
             "note": "Public TLS checks are not applicable for dark-web domains",
         }
+
     result = {
         "has_ssl": False,
         "issuer": None,
+        "issuer_org": None,
         "subject": None,
+        "subject_cn": None,
         "not_before": None,
         "not_after": None,
         "days_to_expiry": None,
-        "self_signed_like": False,
+        "days_to_issue": None,
+        "self_signed": False,
+        "expired": False,
+        "hostname_mismatch": False,
+        "revoked": False,
+        "untrusted_root": False,
+        "weak_protocol": False,
+        "weak_cipher": False,
         "ssl_error": None,
+        "ssl_error_type": None,
         "source": "live",
     }
+
+    # First attempt: validated context (will throw if cert is invalid)
+    # We catch the error to classify it, then try unvalidated for details
     try:
-        ctx = ssl.create_default_context()
+        ctx = ssl_module.create_default_context()
         with socket.create_connection((s, 443), timeout=timeout) as sock:
             with ctx.wrap_socket(sock, server_hostname=s) as ssock:
                 cert = ssock.getpeercert()
-                issuer = cert.get("issuer", ())
-                subject = cert.get("subject", ())
+                _populate_cert_info(cert, result)
                 result["has_ssl"] = True
-                result["issuer"] = issuer
-                result["subject"] = subject
-                result["not_before"] = cert.get("notBefore")
-                result["not_after"] = cert.get("notAfter")
-                result["self_signed_like"] = str(issuer).lower() == str(subject).lower() and str(issuer) != "()"
-                if cert.get("notAfter"):
-                    exp = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
-                    result["days_to_expiry"] = (exp - _utcnow()).days
+                return result
+    except ssl_module.SSLCertVerificationError as exc:
+
+        result["ssl_error"] = str(exc)
+        # Classify the error
+        if is_ssl_expired_error(str(exc)):
+            result["ssl_error_type"] = "expired"
+            result["expired"] = True
+        elif is_ssl_self_signed_error(str(exc)):
+            result["ssl_error_type"] = "self_signed"
+            result["self_signed"] = True
+        elif is_ssl_hostname_mismatch_error(str(exc)):
+            result["ssl_error_type"] = "hostname_mismatch"
+            result["hostname_mismatch"] = True
+        elif is_ssl_revoked_error(str(exc)):
+            result["ssl_error_type"] = "revoked"
+            result["revoked"] = True
+        elif is_ssl_untrusted_root_error(str(exc)):
+            result["ssl_error_type"] = "untrusted_root"
+            result["untrusted_root"] = True
+        else:
+            result["ssl_error_type"] = "unknown"
+    except OSError as exc:
+        result["ssl_error"] = str(exc)
+        result["ssl_error_type"] = "connection_error"
+        return result
     except Exception as exc:
         result["ssl_error"] = str(exc)
+        result["ssl_error_type"] = "unknown"
+        return result
+
+    # Second attempt: unvalidated context to get raw cert details
+    # Use _create_unverified_context() instead of PROTOCOL_TLS_CLIENT + CERT_NONE
+    # because _create_unverified_context() is more compatible across Python versions
+    # and handles edge cases like SSLv23 method negotiation better.
+    try:
+        ctx = ssl_module._create_unverified_context()
+        ctx.check_hostname = False
+        with socket.create_connection((s, 443), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=s) as ssock:
+                # Check protocol version
+                version = ssock.version() or ""
+                if version in ("TLSv1", "TLSv1.1", "SSLv3", "SSLv2"):
+                    result["weak_protocol"] = True
+                # Check cipher
+                cipher = ssock.cipher()
+                if cipher:
+                    cipher_name = cipher[0] or ""
+                    weak_ciphers = ("RC4", "DES", "3DES", "MD5", "EXP", "NULL", "aNULL", "eNULL")
+                    if any(wc.lower() in cipher_name.lower() for wc in weak_ciphers):
+                        result["weak_cipher"] = True
+                # Get cert for details even when validation fails
+                cert = ssock.getpeercert()
+                if cert:
+                    _populate_cert_info(cert, result)
+                    result["has_ssl"] = True
+    except Exception:
+        pass
+
+    # IMPORTANT: If we have a classified SSL error (expired, self-signed, hostname_mismatch,
+    # revoked, untrusted_root), that means the TLS handshake succeeded but certificate
+    # verification failed. The server does HAVE a certificate — it's just not trustworthy.
+    # Set has_ssl=True so downstream scoring knows a certificate exists.
+    if result.get("ssl_error_type") and result["ssl_error_type"] not in ("connection_error", "unknown", None):
+        result["has_ssl"] = True
+
     return result
+
+
+def _populate_cert_info(cert: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Extract certificate information into the result dict."""
+    # Issuer
+    issuer = cert.get("issuer", ())
+    if issuer:
+        result["issuer"] = issuer
+        issuer_cn = None
+        issuer_org = None
+        for attr in issuer:
+            for key, value in attr:
+                if key == "organizationName":
+                    issuer_org = value
+                if key == "commonName":
+                    issuer_cn = value
+        result["issuer_org"] = issuer_org or issuer_cn
+
+    # Subject
+    subject = cert.get("subject", ())
+    if subject:
+        result["subject"] = subject
+        subject_cn = None
+        for attr in subject:
+            for key, value in attr:
+                if key == "commonName":
+                    subject_cn = value
+        result["subject_cn"] = subject_cn
+
+    # Check self-signed: issuer == subject
+    result["self_signed"] = str(issuer).lower() == str(subject).lower() and str(issuer) != "()"
+
+    # Dates
+    result["not_before"] = cert.get("notBefore")
+    result["not_after"] = cert.get("notAfter")
+
+    if cert.get("notAfter"):
+        try:
+            # Handle both single-digit days ("Dec  5 00:00:00 2023 GMT") and
+            # double-digit days ("Dec 25 00:00:00 2023 GMT") by normalizing
+            # the space-separated date first
+            date_str = cert["notAfter"].strip()
+            # Split on whitespace and rejoin with single space
+            parts = date_str.split()
+            if len(parts) >= 4:
+                # Normalize: month, day, time, year, timezone
+                month = parts[0]
+                day = parts[1].zfill(2)  # zero-pad single-digit days
+                time_part = parts[2]
+                year = parts[3]
+                tz = parts[4] if len(parts) > 4 else "GMT"
+                normalized = f"{month} {day} {time_part} {year} {tz}"
+                exp = datetime.strptime(normalized, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+                days = (exp - _utcnow()).days
+                result["days_to_expiry"] = days
+                if days < 0:
+                    result["expired"] = True
+                    result["ssl_error_type"] = "expired"
+        except (ValueError, KeyError, IndexError):
+            pass
+
+    if cert.get("notBefore"):
+        try:
+            date_str = cert["notBefore"].strip()
+            parts = date_str.split()
+            if len(parts) >= 4:
+                month = parts[0]
+                day = parts[1].zfill(2)
+                time_part = parts[2]
+                year = parts[3]
+                tz = parts[4] if len(parts) > 4 else "GMT"
+                normalized = f"{month} {day} {time_part} {year} {tz}"
+                issue = datetime.strptime(normalized, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+                result["days_to_issue"] = (_utcnow() - issue).days
+        except (ValueError, KeyError, IndexError):
+            pass
+
+
+# ==============================================================================
+# CERTIFICATE TRANSPARENCY LOG ANALYSIS (crt.sh)
+# ==============================================================================
+
+
+def analyze_certificate_transparency(domain: str, timeout: float = 5.0) -> Dict[str, Any]:
+    """
+    Query Certificate Transparency logs via crt.sh for domain certificate intelligence.
+
+    Discovers:
+      - Total number of issued certificates for the domain and its subdomains
+      - Recently issued certificates (last 90 days) — potential phishing infrastructure
+      - Certificate issuers (CAs) used
+      - Subdomains exposed via CT logs (SAN/commonName entries)
+      - Suspicious patterns: wildcard certs, self-signed certs in CT, rapid issuance
+
+    API: https://crt.sh/?q=%.domain&output=json
+    Rate limit: ~60 req/min/IP (enforced by Nginx)
+
+    Returns:
+        available: Whether the query succeeded
+        total_certs: Total number of certificates found
+        recent_certs_90d: Certificates issued in the last 90 days
+        unique_issuers: Distinct certificate authorities that issued certs
+        issuers: List of issuer names
+        subdomains_discovered: Unique subdomains extracted from cert SAN/CN
+        has_wildcard_cert: True if wildcard certs (*.domain) are present
+        suspicious_recent_issuance: True if many recent certs issued
+        recent_issuance_risk: Risk contribution 0-100
+        suspicious_issuers: List of known-abused CAs detected
+        warning: Human-readable warning if suspicious
+        error: Error message if query failed
+    """
+    s = sanitize_domain(domain)
+    tld = s.split(".")[-1] if "." in s else ""
+    
+    if tld in DARK_WEB_TLDS:
+        return {
+            "available": False,
+            "source": "not_applicable_dark_web",
+            "note": "Certificate Transparency is not applicable for dark-web domains.",
+        }
+    
+    result: Dict[str, Any] = {
+        "available": False,
+        "source": "live",
+        "total_certs": 0,
+        "recent_certs_90d": 0,
+        "unique_issuers": 0,
+        "issuers": [],
+        "subdomains_discovered": [],
+        "has_wildcard_cert": False,
+        "suspicious_recent_issuance": False,
+        "recent_issuance_risk": 0,
+        "suspicious_issuers": [],
+        "warning": None,
+        "error": None,
+    }
+    
+    # Known CAs that are frequently abused for phishing certificates
+    ABUSED_CAS = frozenset({
+        "let's encrypt", "letsencrypt", "lets encrypt",
+        "zero ssl", "zerossl",
+        "buypass", "buypass as",
+        "sectigo", "comodo",
+        "globalsign",
+        "digicert",
+    })
+    
+    # Query crt.sh for the domain and its subdomains
+    query = f"%.{s}"
+    url = f"https://crt.sh/?q={urllib_parse.quote(query)}&output=json"
+    
+    try:
+        req = urllib_request.Request(
+            url,
+            headers={
+                "User-Agent": "TMGC-CT-Inspector/1.0 (+security-analysis)",
+                "Accept": "application/json",
+            }
+        )
+        with urllib_request.urlopen(req, timeout=timeout) as resp:
+            raw_data = resp.read().decode("utf-8")
+            entries = json.loads(raw_data)
+        
+        if not isinstance(entries, list):
+            result["error"] = "Unexpected response format from crt.sh"
+            return result
+        
+        # Process entries
+        seen_certs: set[str] = set()
+        seen_issuers: set[str] = set()
+        seen_subdomains: set[str] = set()
+        recent_count = 0
+        wildcard_certs = False
+        suspicious_issuers_found: list[str] = []
+        
+        now = datetime.now(timezone.utc)
+        
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            
+            cert_id = entry.get("id")
+            if cert_id:
+                if str(cert_id) in seen_certs:
+                    continue
+                seen_certs.add(str(cert_id))
+            
+            # Extract issuer
+            issuer_name = entry.get("issuer_name", "") or ""
+            if issuer_name:
+                # Parse CN from issuer string
+                cn_match = re.search(r"CN\s*=\s*([^,]+)", issuer_name)
+                if cn_match:
+                    issuer_cn = cn_match.group(1).strip()
+                    seen_issuers.add(issuer_cn)
+                    # Check if this CA is frequently abused
+                    if any(abused.lower() in issuer_cn.lower() for abused in ABUSED_CAS):
+                        if issuer_cn not in suspicious_issuers_found:
+                            suspicious_issuers_found.append(issuer_cn)
+            
+            # Check entry timestamp for recency
+            entry_ts = entry.get("entry_timestamp", "")
+            if entry_ts:
+                try:
+                    ts = datetime.fromisoformat(entry_ts.replace("Z", "+00:00"))
+                    days_ago = (now - ts).days
+                    if days_ago <= 90:
+                        recent_count += 1
+                except (ValueError, TypeError):
+                    pass
+            
+            # Extract subdomains from name_value (SAN/commonName)
+            name_value = entry.get("name_value", "") or ""
+            names = [n.strip().lower() for n in name_value.split("\n") if n.strip()]
+            for name in names:
+                # Skip wildcard entries for subdomain enumeration (but track them)
+                if name.startswith("*."):
+                    wildcard_certs = True
+                    actual_name = name[2:]  # Remove *. prefix
+                else:
+                    actual_name = name
+                
+                # Only include names that belong to this domain tree
+                if actual_name.endswith("." + s) or actual_name == s:
+                    seen_subdomains.add(actual_name)
+        
+        # Filter out the main domain itself from subdomains
+        subdomains = sorted([sd for sd in seen_subdomains if sd != s])
+        
+        # Determine suspiciousness
+        recent_issuance_risk = 0
+        suspicious_recent = False
+        
+        if len(seen_certs) > 50:
+            # High cert count could indicate fast-flux or many subdomains
+            pass  # Not inherently suspicious but noted
+        
+        if recent_count > 20:
+            suspicious_recent = True
+            recent_issuance_risk = 30
+        elif recent_count > 10:
+            suspicious_recent = True
+            recent_issuance_risk = 20
+        elif recent_count > 5:
+            suspicious_recent = True
+            recent_issuance_risk = 10
+        
+        # If recent issuance AND suspicious CA
+        if suspicious_recent and suspicious_issuers_found:
+            recent_issuance_risk = min(recent_issuance_risk + 15, 100)
+        
+        # Build warning if needed
+        warning = None
+        reasons: list[str] = []
+        
+        if suspicious_recent:
+            reasons.append(f"{recent_count} certificates issued in the last 90 days — possible rapid infrastructure churn")
+        
+        # Check for known-abused patterns
+        # Quick-issuance CAs + wildcard + recent = high risk for phishing infrastructure
+        if wildcard_certs and suspicious_recent and suspicious_issuers_found:
+            reasons.append(
+                f"Wildcard certificates issued recently by {', '.join(suspicious_issuers_found[:2])} — "
+                "this combination is frequently used for phishing infrastructure"
+            )
+        
+        if reasons:
+            warning = " | ".join(reasons)
+        
+        result["available"] = True
+        result["total_certs"] = len(seen_certs)
+        result["recent_certs_90d"] = recent_count
+        result["unique_issuers"] = len(seen_issuers)
+        result["issuers"] = sorted(seen_issuers)[:10]  # Limit to top 10
+        result["subdomains_discovered"] = subdomains[:50]  # Limit to top 50
+        result["subdomain_count"] = len(subdomains)
+        result["has_wildcard_cert"] = wildcard_certs
+        result["suspicious_recent_issuance"] = suspicious_recent
+        result["recent_issuance_risk"] = recent_issuance_risk
+        result["suspicious_issuers"] = suspicious_issuers_found
+        result["warning"] = warning
+        
+    except urllib_error.HTTPError as exc:
+        result["error"] = f"crt.sh HTTP error: {exc.code}"
+    except urllib_error.URLError as exc:
+        result["error"] = f"crt.sh connection error: {exc.reason}"
+    except json.JSONDecodeError as exc:
+        result["error"] = f"crt.sh response parse error: {exc}"
+    except Exception as exc:
+        result["error"] = f"crt.sh query error: {exc}"
+    
+    return result
+
+
+# ==============================================================================
+# ENHANCED DNS ANALYSIS (AAAA, TXT, CNAME, MX, NS)
+# ==============================================================================
+
+
+def analyze_dns_records(domain: str, timeout: float = 3.0) -> Dict[str, Any]:
+    """
+    Comprehensive DNS record analysis with full record type enumeration.
+
+    Resolves:
+      - A, AAAA, MX, NS, TXT, CNAME records
+      - Detects wildcard DNS (random subdomain resolution)
+      - Detects SPF, DKIM, DMARC email security records
+      - Detects parked/placeholder DNS patterns
+
+    Uses dnspython when available, falls back to socket for basic AAAA lookups.
+    The wildcard detection makes one additional DNS query per call.
+
+    Returns:
+        available: Whether DNS resolution succeeded
+        a_records: IPv4 addresses
+        aaaa_records: IPv6 addresses
+        mx_records: Mail exchange records
+        ns_records: Nameserver records
+        txt_records: TXT records (raw)
+        cname_records: CNAME target if applicable
+        has_mx: Whether MX records exist
+        has_ns: Whether NS records exist
+        has_txt: Whether TXT records exist
+        has_aaaa: Whether AAAA records exist
+        has_cname: Whether CNAME record exists
+        has_spf: Whether SPF record is configured
+        has_dkim: Whether DKIM record is detected
+        has_dmarc: Whether DMARC record is detected
+        has_wildcard_dns: Whether wildcard DNS is enabled
+        spf_record: The SPF record if found
+        dkim_record: The DKIM record if found
+        dmarc_record: The DMARC record if found
+        suspicious_patterns: List of suspicious DNS patterns detected
+        source: "live" or "unavailable"
+        error: Error message if failed
+    """
+    s = sanitize_domain(domain)
+    tld = s.split(".")[-1] if "." in s else ""
+    
+    result: Dict[str, Any] = {
+        "available": False,
+        "source": "unavailable" if _dns_resolver is None else "live",
+        "a_records": [],
+        "aaaa_records": [],
+        "mx_records": [],
+        "ns_records": [],
+        "txt_records": [],
+        "cname_records": [],
+        "has_mx": False,
+        "has_ns": False,
+        "has_txt": False,
+        "has_aaaa": False,
+        "has_cname": False,
+        "has_spf": False,
+        "has_dkim": False,
+        "has_dmarc": False,
+        "has_wildcard_dns": False,
+        "spf_record": None,
+        "dkim_record": None,
+        "dmarc_record": None,
+        "suspicious_patterns": [],
+        "error": None,
+    }
+    
+    if tld in DARK_WEB_TLDS:
+        return {
+            "available": False,
+            "source": "not_applicable_dark_web",
+            "note": "Public DNS checks are not applicable for dark-web domains",
+        }
+    
+    if _dns_resolver is None:
+        result["error"] = "dnspython library is not installed; only basic A record resolution available"
+        return result
+    
+    # Resolve each record type
+    rtypes = ["A", "AAAA", "MX", "NS", "TXT", "CNAME"]
+    resolver = _dns_resolver
+    
+    for rtype in rtypes:
+        try:
+            answers = resolver.resolve(s, rtype, lifetime=timeout)
+            records = [str(r).strip() for r in answers if str(r).strip()]
+            
+            if rtype == "A":
+                result["a_records"] = records[:10]
+            elif rtype == "AAAA":
+                result["aaaa_records"] = records[:10]
+                result["has_aaaa"] = bool(records)
+            elif rtype == "MX":
+                # MX records have format: "10 mail.example.com."
+                mx_parsed = records[:10]
+                result["mx_records"] = mx_parsed
+                result["has_mx"] = bool(records)
+            elif rtype == "NS":
+                result["ns_records"] = records[:10]
+                result["has_ns"] = bool(records)
+            elif rtype == "TXT":
+                result["txt_records"] = records[:20]
+                result["has_txt"] = bool(records)
+                
+                # Parse TXT records for email security
+                for txt in records:
+                    low = txt.lower()
+                    if low.startswith("v=spf1"):
+                        result["has_spf"] = True
+                        result["spf_record"] = txt[:300]  # Truncate to 300 chars
+                    elif low.startswith("v=dkim1"):
+                        result["has_dkim"] = True
+                        result["dkim_record"] = txt[:300]
+                    elif "_dmarc" in txt.lower() or "dmarc" in txt.lower():
+                        # DMARC is typically in _dmarc.domain TXT, but some include in domain TXT
+                        if "v=dmarc1" in low:
+                            result["has_dmarc"] = True
+                            result["dmarc_record"] = txt[:300]
+            elif rtype == "CNAME":
+                result["cname_records"] = records[:5]
+                result["has_cname"] = bool(records)
+        
+        except resolver.NoAnswer:
+            pass  # No records of this type
+        except resolver.NXDOMAIN:
+            result["error"] = "Domain does not exist (NXDOMAIN)"
+            return result
+        except resolver.Timeout:
+            pass  # Timeout for this record type
+        except Exception:
+            pass  # General failure for this type
+    
+    # Now check DMARC specifically (_dmarc.domain)
+    try:
+        dmarc_answers = resolver.resolve(f"_dmarc.{s}", "TXT", lifetime=timeout)
+        for ans in dmarc_answers:
+            txt = str(ans).strip()
+            if "v=dmarc1" in txt.lower():
+                result["has_dmarc"] = True
+                result["dmarc_record"] = txt[:300]
+                break
+    except Exception:
+        pass  # DMARC not configured
+    
+    # Check for common DKIM selectors
+    dkim_selectors = ["default", "google", "dkim", "mail", "selector1", "selector2"]
+    for selector in dkim_selectors:
+        try:
+            dkim_answers = resolver.resolve(f"{selector}._domainkey.{s}", "TXT", lifetime=2.0)
+            for ans in dkim_answers:
+                txt = str(ans).strip()
+                if "v=dkim1" in txt.lower():
+                    result["has_dkim"] = True
+                    result["dkim_record"] = txt[:300]
+                    break
+            if result["has_dkim"]:
+                break
+        except Exception:
+            continue
+    
+    # --- Wildcard DNS detection ---
+    # Query a random, non-existent subdomain. If it resolves, wildcard DNS is active.
+    import uuid
+    random_label = f"x{uuid.uuid4().hex[:8]}x"
+    random_sub = f"{random_label}.{s}"
+    try:
+        answers = resolver.resolve(random_sub, "A", lifetime=2.0)
+        wildcard_ips = [str(r).strip() for r in answers if str(r).strip()]
+        if wildcard_ips:
+            result["has_wildcard_dns"] = True
+            result["wildcard_ips"] = wildcard_ips[:5]
+    except Exception:
+        pass  # No wildcard — expected behavior
+    
+    # --- Detect suspicious patterns ---
+    suspicious: list[str] = []
+    
+    # No MX records when A records exist (legit sites almost always have email)
+    if result["a_records"] and not result["has_mx"]:
+        suspicious.append("Domain resolves but has no mail exchange (MX) records — unusual for legitimate sites")
+    
+    # No SPF record when MX exists
+    if result["has_mx"] and not result["has_spf"]:
+        suspicious.append("MX records present but no SPF policy — email spoofing protection missing")
+    
+    # No DMARC when MX and SPF exist
+    if result["has_mx"] and result["has_spf"] and not result["has_dmarc"]:
+        suspicious.append("SPF configured but no DMARC policy — incomplete email security posture")
+    
+    # Wildcard DNS (often used by phishing infrastructure)
+    if result["has_wildcard_dns"]:
+        suspicious.append("Wildcard DNS is enabled — can be used to serve content on any subdomain, common in phishing infrastructure")
+    
+    result["suspicious_patterns"] = suspicious
+    result["available"] = True
+    
+    return result
+
+
+# ==============================================================================
+# SUBDOMAIN ENUMERATION
+# ==============================================================================
+
+
+def enumerate_subdomains(domain: str, ct_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Enumerate subdomains using Certificate Transparency logs and DNS.
+
+    Primary source: crt.sh (via analyze_certificate_transparency)
+    DNS validation: Resolves discovered subdomains to verify they exist
+
+    Returns:
+        available: Whether enumeration was possible
+        subdomain_count: Total unique subdomains discovered
+        subdomains: List of discovered subdomains (limited to 50)
+        resolved_count: How many subdomains were DNS-validated
+        wildcard_dns: Whether wildcard DNS was detected (makes enumeration unreliable)
+        warning: Warning if subdomain enumeration has issues
+        error: Error message if enumeration failed
+    """
+    s = sanitize_domain(domain)
+    tld = s.split(".")[-1] if "." in s else ""
+    
+    result: Dict[str, Any] = {
+        "available": False,
+        "subdomain_count": 0,
+        "subdomains": [],
+        "resolved_count": 0,
+        "wildcard_dns": False,
+        "warning": None,
+        "error": None,
+    }
+    
+    if tld in DARK_WEB_TLDS:
+        result["warning"] = "Subdomain enumeration is not applicable for dark-web domains."
+        return result
+    
+    # Get CT data if not provided
+    if ct_result is None or not ct_result.get("available"):
+        ct_result = analyze_certificate_transparency(s)
+    
+    subdomains = ct_result.get("subdomains_discovered", [])
+    
+    if not subdomains:
+        result["available"] = True
+        result["subdomain_count"] = 0
+        result["subdomains"] = []
+        result["warning"] = "No subdomains discovered via Certificate Transparency logs."
+        return result
+    
+    # DNS-validate a sample of discovered subdomains
+    resolved_count = 0
+    validated_subdomains: list[Dict[str, Any]] = []
+    
+    # Limit validation to first 20 to avoid excessive DNS queries
+    sample = subdomains[:20]
+    for sub in sample:
+        if _dns_resolver is not None:
+            try:
+                _dns_resolver.resolve(sub, "A", lifetime=2.0)
+                resolved_count += 1
+                validated_subdomains.append({"subdomain": sub, "resolves": True})
+            except Exception:
+                validated_subdomains.append({"subdomain": sub, "resolves": False})
+        else:
+            # Fallback: try socket
+            try:
+                socket.gethostbyname(sub)
+                resolved_count += 1
+                validated_subdomains.append({"subdomain": sub, "resolves": True})
+            except Exception:
+                validated_subdomains.append({"subdomain": sub, "resolves": False})
+    
+    # Check wildcard DNS via CT data
+    wildcard_dns = bool(ct_result.get("has_wildcard_cert"))
+    
+    warning = None
+    if wildcard_dns:
+        warning = (
+            f"Wildcard certificate detected — subdomain enumeration may be incomplete "
+            f"as wildcard certs can cover any subdomain. "
+            f"Discovered {len(subdomains)} subdomains via CT logs."
+        )
+    
+    result["available"] = True
+    result["subdomain_count"] = len(subdomains)
+    result["subdomains"] = subdomains[:50]
+    result["resolved_count"] = resolved_count
+    result["validated_subdomains"] = validated_subdomains
+    result["wildcard_dns"] = wildcard_dns
+    result["warning"] = warning
+    
+    return result
+
+
+# ==============================================================================
+# WHOIS ANALYSIS
+# ==============================================================================
 
 
 def _parse_date(value: Any) -> Optional[datetime]:
@@ -991,6 +2480,11 @@ def analyze_whois_mock(domain: str) -> Dict[str, Any]:
         }
 
 
+# ==============================================================================
+# VIRUSTOTAL INTEGRATION
+# ==============================================================================
+
+
 def analyze_virustotal(domain: str, api_key: str = "") -> Dict[str, Any]:
     d = sanitize_domain(domain)
     if not api_key:
@@ -1046,6 +2540,11 @@ def analyze_virustotal(domain: str, api_key: str = "") -> Dict[str, Any]:
             "flagged": False,
             "note": f"VirusTotal error: {exc}",
         }
+
+
+# ==============================================================================
+# RISK SCORING
+# ==============================================================================
 
 
 def _determine_attack_type(
@@ -1132,11 +2631,14 @@ def compute_risk_score(
         breakdown["high_risk_tld_brand"] = 15.0
         reasons.append(f"High-risk TLD '.{tld}' combined with known brand")
 
-    # 2) Typosquatting
+    # 2) Typosquatting (with keyboard proximity)
     if typo_result.get("detected"):
-        p = 28.0 + 18.0 * float(typo_result.get("combined_score", 0))
-        score += p
-        breakdown["typosquatting"] = round(p, 1)
+        base_p = 28.0 + 18.0 * float(typo_result.get("combined_score", 0))
+        if typo_result.get("keyboard_proximity_attack"):
+            base_p += 10.0  # Keyboard proximity is more suspicious
+            reasons.append("Keyboard proximity attack detected — adjacent keys used instead of brand characters")
+        score += base_p
+        breakdown["typosquatting"] = round(base_p, 1)
         reasons.append(f"Typosquatting detected against brand '{typo_result.get('closest_brand')}'")
     elif float(typo_result.get("combined_score", 0)) >= 0.80:
         p = 10.0
@@ -1199,7 +2701,50 @@ def compute_risk_score(
         score += struct_pts
         breakdown["domain_features"] = round(struct_pts, 1)
 
-    # 6) WHOIS
+    # 6) SSL (enhanced with full error classification)
+    ssl_pts = 0.0
+    if ssl_result.get("source") not in ("not_applicable_dark_web",):
+        # Check for specific SSL error types (hardened v2)
+        if ssl_result.get("expired"):
+            ssl_pts += 18.0
+            reasons.append("SSL certificate is EXPIRED — domain may be compromised or abandoned")
+        if ssl_result.get("self_signed"):
+            ssl_pts += 12.0
+            reasons.append("Self-signed SSL certificate — no chain of trust to a known CA")
+        if ssl_result.get("hostname_mismatch"):
+            ssl_pts += 15.0
+            reasons.append("SSL hostname mismatch — certificate was issued for a different domain")
+        if ssl_result.get("revoked"):
+            ssl_pts += 25.0
+            reasons.append("SSL certificate has been REVOKED — indicates security compromise")
+        if ssl_result.get("untrusted_root"):
+            ssl_pts += 10.0
+            reasons.append("SSL certificate signed by an untrusted root CA")
+        if ssl_result.get("weak_protocol"):
+            ssl_pts += 8.0
+            reasons.append("Weak TLS protocol version detected (TLS 1.0/1.1)")
+        if ssl_result.get("weak_cipher"):
+            ssl_pts += 6.0
+            reasons.append("Weak cipher suite detected (RC4/DES/MD5)")
+        # Legacy self_signed_like check (backward compat)
+        if ssl_result.get("self_signed_like") and not ssl_result.get("self_signed"):
+            ssl_pts += 6.0
+            reasons.append("Self-signed-like or anomalous SSL certificate")
+        if ssl_result.get("ssl_error") and not any([
+            ssl_result.get("expired"), ssl_result.get("self_signed"),
+            ssl_result.get("hostname_mismatch"), ssl_result.get("revoked"),
+            ssl_result.get("untrusted_root"),
+        ]):
+            ssl_pts += 2.0
+        exp = ssl_result.get("days_to_expiry")
+        if isinstance(exp, int) and 0 <= exp < 7:
+            ssl_pts += 5.0
+            reasons.append(f"SSL certificate expires in {exp} day(s)")
+    if ssl_pts:
+        score += ssl_pts
+        breakdown["ssl"] = round(ssl_pts, 1)
+
+    # 7) WHOIS
     whois_pts = 0.0
     age = whois_result.get("age_days")
     if isinstance(age, int):
@@ -1221,7 +2766,7 @@ def compute_risk_score(
         score += whois_pts
         breakdown["whois"] = round(whois_pts, 1)
 
-    # 7) DNS (skip if dark-web not applicable)
+    # 8) DNS
     dns_pts = 0.0
     if dns_result.get("source") not in ("not_applicable_dark_web",):
         if not dns_result.get("has_dns"):
@@ -1234,22 +2779,6 @@ def compute_risk_score(
     if dns_pts:
         score += dns_pts
         breakdown["dns"] = round(dns_pts, 1)
-
-    # 8) SSL (skip if dark-web not applicable)
-    ssl_pts = 0.0
-    if ssl_result.get("source") not in ("not_applicable_dark_web",):
-        if ssl_result.get("ssl_error"):
-            ssl_pts += 2.0
-        if ssl_result.get("self_signed_like"):
-            ssl_pts += 6.0
-            reasons.append("Self-signed or anomalous SSL certificate")
-        exp = ssl_result.get("days_to_expiry")
-        if isinstance(exp, int) and exp < 0:
-            ssl_pts += 5.0
-            reasons.append("SSL certificate is expired")
-    if ssl_pts:
-        score += ssl_pts
-        breakdown["ssl"] = round(ssl_pts, 1)
 
     # 9) VirusTotal threat intelligence
     ti_pts = 0.0

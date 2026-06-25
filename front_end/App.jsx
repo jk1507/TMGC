@@ -45,6 +45,8 @@ const NAV_ITEMS = [
   { id: "dns-records", label: "DNS Records", icon: "dns" },
   { id: "content-analysis", label: "Content Analysis", icon: "file" },
   { id: "reputation", label: "Reputation Lookup", icon: "star" },
+  { id: "entity-attribution", label: "Entity Attribution", icon: "user" },
+  { id: "brand-impersonation", label: "Brand Impersonation", icon: "brand" },
   { id: "reports", label: "Reports", icon: "report" },
   { id: "saved-scans", label: "Saved Scans", icon: "bookmark" },
   { id: "settings", label: "Settings", icon: "settings" },
@@ -69,17 +71,17 @@ function App() {
   const exportRef = useRef(null);
 
   const data = useMemo(() => normalizeResult(result), [result]);
-  const highRisk = (data?.risk_score || 0) >= 60;
+  const highRisk = (data?.risk_score || 0) >= 46;
   const verdict =
-  (data?.risk_score || 0) >= 90
+  (data?.risk_score || 0) >= 71
     ? "☠️ CRITICAL / PHISHING"
-    : (data?.risk_score || 0) >= 60
+    : (data?.risk_score || 0) >= 46
     ? "🔴 HIGH RISK"
-    : (data?.risk_score || 0) >= 30
+    : (data?.risk_score || 0) >= 26
     ? "🟠 SUSPICIOUS"
-    : (data?.risk_score || 0) >= 30
-    ? "SUSPICIOUS"
-    : "SAFE / TRUSTED";
+    : (data?.risk_score || 0) >= 11
+    ? "🟡 LOW RISK"
+    : "✅ SAFE / TRUSTED";
   const accent = highRisk ? "border-red-500 text-red-400 shadow-[0_0_24px_rgba(239,68,68,0.45)]" : "border-green-500 text-green-400 shadow-[0_0_24px_rgba(34,197,94,0.35)]";
  const headerRows =
   data?.security_header_details ||
@@ -142,6 +144,11 @@ function App() {
         ">> AI CORE VERDICT RECEIVED.",
         `>> RISK SCORE LOCKED: ${payload.risk_score}/100`,
       ]);
+      // Auto-trigger detailed AI analysis after scan completes
+      setTimeout(() => {
+        // Only auto-run if user hasn't manually triggered it yet
+        runAIAnalysis();
+      }, 500);
     } catch (analysisError) {
       setError(analysisError.message || "Analysis failed.");
       setLogs((current) => [...current, `!! PIPELINE FAILURE: ${analysisError.message}`]);
@@ -699,6 +706,8 @@ function normalizeResult(result) {
     nameservers: result.dns_data?.nameservers || [],
     dnssec: /dnssec.*signed/i.test(whoisRaw) ? "Enabled" : whoisRaw ? "Unknown" : "N/A",
     ssl_protocol: extractSslProtocol(rawLogs),
+    ensemble_ml: result.ensemble_ml || null,
+    owner_image: result.owner_image || null,
   };
 }
 

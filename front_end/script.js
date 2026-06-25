@@ -584,7 +584,7 @@ function renderML(ml) {
     const section = document.getElementById("mlSection");
     const el = document.getElementById("mlResult");
 
-    const data = currentResults; // 👈 access full response
+    const data = currentResults; // access full response
 
     if (!ml || !ml.available) {
         el.innerHTML = `
@@ -601,6 +601,7 @@ function renderML(ml) {
     const xgb = data.xgb || {};
     const hybridScore = data.hybrid_score ?? data.risk_score;
     const hybridLevel = data.hybrid_risk_level ?? data.risk_level;
+    const ensemble = data.ensemble_ml || {};
 
     el.innerHTML = `
         <div style="margin-bottom:12px;">
@@ -621,6 +622,22 @@ function renderML(ml) {
                 Score: <strong>${xgb.xgb_score ? xgb.xgb_score.toFixed(1) + "%" : "N/A"}</strong>
             </div>
         </div>
+
+        ${ensemble.model_count > 0 ? `
+        <div style="margin-bottom:12px; border-top:1px solid #444; padding-top:10px;">
+            <div class="ml-verdict" style="color:#06b6d4;">
+                ENSEMBLE: ${(ensemble.ensemble_verdict || "N/A").toUpperCase()}
+            </div>
+            <div class="ml-prob">
+                Score: <strong>${ensemble.ensemble_score ?? "N/A"}%</strong>
+                &nbsp;·&nbsp; Models: <strong>${ensemble.model_count}</strong>
+                &nbsp;·&nbsp; Agreement: <strong>${ensemble.model_agreement}%</strong>
+            </div>
+            <div class="ml-prob" style="font-size:10px; color:#555;">
+                ${ensemble.available_models ? ensemble.available_models.join(", ") : ""}
+            </div>
+        </div>
+        ` : ""}
 
         <div style="border-top:1px solid #444; padding-top:10px;">
             <div class="ml-verdict text-high">

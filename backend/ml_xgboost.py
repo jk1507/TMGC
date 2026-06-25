@@ -164,7 +164,6 @@ def train_xgb(X, y):
         
         # Evaluate calibrated model on test set
         y_proba_cal = calibrated.predict_proba(X_test)[:, 1]
-        y_pred_cal = (y_proba_cal >= 0.5).astype(int)
         auc_cal = roc_auc_score(y_test, y_proba_cal)
         print(f"  Calibrated AUC: {auc_cal:.4f}")
         print(f"  Raw XGBoost proba range on test set: {y_proba.min():.3f} - {y_proba.max():.3f}")

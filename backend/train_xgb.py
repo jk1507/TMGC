@@ -524,8 +524,6 @@ def main() -> None:
     legit_header = 0.0  # Good security headers (low score = good)
     
     phish_ssl = 0.3
-    phish_mx_default = 0.2  # Most phishing domains lack MX
-    phish_asn_default = 0.15  # Most phishing domains have unavailable ASN
 
     for domain in LEGITIMATE_DOMAINS:
         # Multiple age variations per domain for robustness
@@ -614,6 +612,27 @@ def main() -> None:
         x.append(feature_vector_for(domain, random.randint(3650, 10000), 1.0, 0.5, has_ssl=0.0,
                                      has_mx=0.0, has_asn=0.0, header_score=random.uniform(5, 20)))
         y.append(1)
+
+    # --------------------------------------------------------------------------
+    # Generate PHISHING samples with GOOD INFRASTRUCTURE (SSL=1, MX=1, ASN=1)
+    # CRITICAL: Without these samples, the model learns that "good infra = legitimate"
+    # unconditionally. Real phishing domains often use compromised hosting with valid SSL,
+    # MX records, and identifiable ASN. These samples teach the model to weigh
+    # domain-name signals (typosquatting, combosquatting, TLD) independently of infra.
+    # --------------------------------------------------------------------------
+    for domain in PHISHING_DOMAINS:
+        # 30% chance: phishing with perfect infrastructure
+        if random.random() < 0.3:
+            x.append(feature_vector_for(domain, random.randint(1, 90), 0.0, 0.3,
+                                         has_ssl=1.0, has_mx=1.0, has_asn=1.0,
+                                         header_score=random.uniform(0, 5)))
+            y.append(1)
+        # 20% chance: phishing with good infra + moderate age
+        if random.random() < 0.2:
+            x.append(feature_vector_for(domain, random.randint(90, 365), 0.5, 0.0,
+                                         has_ssl=1.0, has_mx=1.0, has_asn=0.8,
+                                         header_score=random.uniform(0, 8)))
+            y.append(1)
 
     # --------------------------------------------------------------------------
     # Generate legitimate domains with suspicious-looking TLDs to train

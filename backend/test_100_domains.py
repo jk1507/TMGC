@@ -1,10 +1,28 @@
-import urllib.request
-import json
+"""
+Batch HTTP test using asyncio httpx concurrency for fast API testing.
+Tests 100+ domains against the live RETRO_INTEL backend.
+
+Usage:
+  1. Start RETRO_INTEL backend:  cd backend && python -m uvicorn main:app
+  2. Run this script:            python backend/test_100_domains.py
+"""
+import asyncio
 import csv
-import time
+import json
 import os
+import re
+import time
+from typing import Any
+
+import httpx
+from tqdm import tqdm
 
 API_URL = "http://127.0.0.1:8000/api/v1/analyze"
+HEALTH_URL = "http://127.0.0.1:8000/health"
+
+# Concurrency settings
+MAX_CONCURRENT = 10
+PER_REQUEST_TIMEOUT = 30  # seconds
 
 DOMAINS = [
     # --- 80 Legitimate/Top Domains ---
@@ -24,7 +42,7 @@ DOMAINS = [
     "nvidia.com", "oracle.com", "ibm.com", "cisco.com", "adobe.com",
     "canva.com", "figma.com", "slack.com", "trello.com", "asana.com",
     "salesforce.com", "hubspot.com", "mailchimp.com", "shopify.com", "stripe.com",
-    
+
     # --- 25 Phishing/Typosquatting/Combosquatting/Homoglyph Test Domains ---
     "g00gle.com", "paypa1.com", "secure-netflix-verify.xyz", "paypal-login.com",
     "faceboook.com", "microsoft-support.tk", "secure-amazon-verify.xyz",
@@ -33,118 +51,167 @@ DOMAINS = [
     "whatsapp-security.ga", "coinbase-wallet.ml", "binance-verify.cf",
     "fedex-tracking.gq", "dhl-shipping.pw", "ups-billing.ws",
     "yahoo-mail-login.info", "outlook-security.live", "gmail-verify.email",
-    "adobe-update.work", "dropbox-share.site"
+    "adobe-update.work", "dropbox-share.site",
 ]
 
-def run_test():
-    print(f"🚀 Starting batch evaluation of {len(DOMAINS)} domains against backend at {API_URL}...")
-    
-    results = []
-    success_count = 0
-    fail_count = 0
-    start_time_batch = time.time()
-    
-    for idx, domain in enumerate(DOMAINS, 1):
-        print(f"[{idx}/{len(DOMAINS)}] Analyzing {domain}...", end="", flush=True)
-        start_time = time.time()
-        
+
+def parse_xgb(findings: list[str]) -> tuple[str, float | str]:
+    """Extract XGBoost verdict and score from findings list."""
+    verdict = "N/A"
+    score: float | str = "N/A"
+    for finding in findings:
+        if "ML ANALYSIS" in finding:
+            if "LEGITIMATE" in finding:
+                verdict = "LEGITIMATE"
+            elif "PHISHING" in finding:
+                verdict = "PHISHING"
+            m = re.search(r"score:\s*([0-9.]+)", finding)
+            if m:
+                score = float(m.group(1))
+    return verdict, score
+
+
+async def analyze_one(
+    client: httpx.AsyncClient,
+    domain: str,
+    sem: asyncio.Semaphore,
+    pbar: tqdm,
+) -> dict[str, Any]:
+    """Analyze a single domain via the HTTP API with concurrency control."""
+    async with sem:
+        t0 = time.time()
         payload = {"url": domain}
-        req = urllib.request.Request(
-            API_URL,
-            data=json.dumps(payload).encode('utf-8'),
-            headers={"Content-Type": "application/json"}
-        )
-        
-        duration = 0
         try:
-            with urllib.request.urlopen(req, timeout=20.0) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                duration = time.time() - start_time
-                success_count += 1
-                
-                # Extract scores and verdicts
-                risk_score = data.get("risk_score", 0)
-                findings = data.get("findings", [])
-                
-                # Extract XGBoost ML specific details
-                xgb_verdict = "N/A"
-                xgb_score = "N/A"
-                for finding in findings:
-                    if "ML ANALYSIS" in finding:
-                        # Extract score and verdict using simple parse
-                        # e.g., "ML ANALYSIS: XGBoost flags domain as LEGITIMATE (score: 13.5/100)"
-                        if "LEGITIMATE" in finding:
-                            xgb_verdict = "LEGITIMATE"
-                        elif "PHISHING" in finding:
-                            xgb_verdict = "PHISHING"
-                        
-                        m = re.search(r"score:\s*([0-9.]+)", finding)
-                        if m:
-                            xgb_score = float(m.group(1))
-                
-                results.append({
-                    "domain": domain,
-                    "status": "SUCCESS",
-                    "risk_score": risk_score,
-                    "xgb_verdict": xgb_verdict,
-                    "xgb_score": xgb_score,
-                    "findings_count": len(findings),
-                    "duration_sec": round(duration, 3),
-                    "error": ""
-                })
-                print(f" Done in {duration:.2f}s (Score: {risk_score}, ML Verdict: {xgb_verdict})")
-        except Exception as e:
-            duration = time.time() - start_time
-            fail_count += 1
-            results.append({
+            resp = await client.post(
+                API_URL,
+                json=payload,
+                timeout=httpx.Timeout(PER_REQUEST_TIMEOUT),
+            )
+            data = resp.json()
+            duration = time.time() - t0
+
+            risk_score = data.get("risk_score", 0)
+            findings = data.get("findings", [])
+            xgb_verdict, xgb_score = parse_xgb(findings)
+
+            result = {
                 "domain": domain,
-                "status": "FAILED",
-                "risk_score": "N/A",
-                "xgb_verdict": "N/A",
-                "xgb_score": "N/A",
-                "findings_count": 0,
+                "status": "SUCCESS",
+                "risk_score": risk_score,
+                "xgb_verdict": xgb_verdict,
+                "xgb_score": xgb_score,
+                "findings_count": len(findings),
                 "duration_sec": round(duration, 3),
-                "error": str(e)
-            })
-            print(f" FAILED in {duration:.2f}s: {e}")
-            
-    total_time = time.time() - start_time_batch
-    
-    # Create artifacts directory if missing
+                "error": "",
+            }
+            pbar.set_postfix_str(f"{domain[:25]:25s} score={risk_score:3d}  {duration:.1f}s")
+
+        except httpx.TimeoutException:
+            duration = time.time() - t0
+            result = {
+                "domain": domain, "status": "TIMEOUT", "risk_score": "N/A",
+                "xgb_verdict": "N/A", "xgb_score": "N/A", "findings_count": 0,
+                "duration_sec": round(duration, 3), "error": "HTTP timeout",
+            }
+            pbar.set_postfix_str(f"{domain[:25]:25s} TIMEOUT {duration:.1f}s")
+
+        except Exception as e:
+            duration = time.time() - t0
+            result = {
+                "domain": domain, "status": "FAILED", "risk_score": "N/A",
+                "xgb_verdict": "N/A", "xgb_score": "N/A", "findings_count": 0,
+                "duration_sec": round(duration, 3), "error": str(e)[:120],
+            }
+            pbar.set_postfix_str(f"{domain[:25]:25s} ERROR: {str(e)[:40]}")
+
+        pbar.update(1)
+        return result
+
+
+async def main():
+    print(f"[START] Starting concurrent batch evaluation of {len(DOMAINS)} domains")
+    print(f"   API: {API_URL}")
+    print(f"   Concurrency: {MAX_CONCURRENT} | Timeout: {PER_REQUEST_TIMEOUT}s per domain")
+    print()
+
+    # Health check
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(HEALTH_URL)
+            status = r.json().get("status")
+            if status != "online":
+                print(f"[WARN] API status: {status} (expected 'online')")
+            else:
+                print("[OK] API is online")
+    except Exception as e:
+        print(f"[FAIL] API unreachable: {e}")
+        print("  Start backend:  cd backend && python -m uvicorn main:app")
+        return 1
+    print()
+
+    sem = asyncio.Semaphore(MAX_CONCURRENT)
+    batch_start = time.time()
+
+    pbar = tqdm(total=len(DOMAINS), desc="Analyzing", unit="dom", ncols=100,
+                bar_format="{l_bar}{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}")
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(PER_REQUEST_TIMEOUT + 5)) as client:
+        tasks = [
+            analyze_one(client, domain, sem, pbar)
+            for i, domain in enumerate(DOMAINS)
+        ]
+        results = await asyncio.gather(*tasks)
+    pbar.close()
+
+    total_time = time.time() - batch_start
+
+    # ---- Generate reports ----
+    success_count = sum(1 for r in results if r["status"] == "SUCCESS")
+    timeout_count = sum(1 for r in results if r["status"] == "TIMEOUT")
+    fail_count = sum(1 for r in results if r["status"] == "FAILED")
+
     os.makedirs("artifacts", exist_ok=True)
-    
-    # Save JSON Report
+
+    # JSON report
     json_path = "artifacts/batch_test_results.json"
     with open(json_path, "w") as f:
         json.dump({
             "summary": {
                 "total_domains": len(DOMAINS),
                 "success": success_count,
+                "timeout": timeout_count,
                 "failed": fail_count,
                 "total_duration_sec": round(total_time, 2),
-                "average_duration_sec": round(total_time / len(DOMAINS), 2)
+                "average_duration_sec": round(total_time / len(DOMAINS), 2),
+                "concurrency": MAX_CONCURRENT,
             },
-            "results": results
+            "results": results,
         }, f, indent=2)
-        
-    # Save CSV Report
+
+    # CSV report
     csv_path = "artifacts/batch_test_results.csv"
+    csv_fields = ["domain", "status", "risk_score", "xgb_verdict", "xgb_score",
+                  "findings_count", "duration_sec", "error"]
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["domain", "status", "risk_score", "xgb_verdict", "xgb_score", "findings_count", "duration_sec", "error"])
+        writer = csv.DictWriter(f, fieldnames=csv_fields)
         writer.writeheader()
         writer.writerows(results)
-        
-    print("\n" + "=" * 60)
+
+    # Print summary
+    print()
+    print("=" * 60)
     print(" BATCH TEST SUMMARY")
     print("=" * 60)
     print(f"Total domains tested: {len(DOMAINS)}")
     print(f"Successes:            {success_count}")
+    print(f"Timeouts:             {timeout_count}")
     print(f"Failures:             {fail_count}")
-    print(f"Total Time:           {total_time:.2f}s")
-    print(f"Avg Time per Domain:  {total_time / len(DOMAINS):.2f}s")
+    print(f"Total wall time:      {total_time:.2f}s")
+    print(f"Avg per domain:       {total_time / len(DOMAINS):.2f}s")
+    print(f"Throughput:           {len(DOMAINS) / total_time:.1f} domains/sec")
     print(f"Reports saved to:     {json_path} and {csv_path}")
     print("=" * 60)
 
+
 if __name__ == "__main__":
-    import re
-    run_test()
+    asyncio.run(main())

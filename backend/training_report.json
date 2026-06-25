@@ -1,0 +1,174 @@
+{
+  "training_date": "2026-06-26T03:02:05.407468",
+  "pipeline": "3.0-real-data",
+  "legitimate_domains": 275,
+  "phishing_domains": 351,
+  "total_training_samples": 3162,
+  "phishing_ratio": 0.5882352941176471,
+  "models": {
+    "xgboost": {
+      "test_metrics": {
+        "accuracy": 1.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "true_positives": 372,
+        "false_positives": 0,
+        "true_negatives": 261,
+        "false_negatives": 0,
+        "auc_roc": 1.0,
+        "auc_pr": 1.0,
+        "brier_score": 0.0,
+        "log_loss": 0.0017
+      },
+      "optimal_threshold": 0.9104173183441162
+    },
+    "lightgbm": {
+      "test_metrics": {
+        "accuracy": 1.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "true_positives": 372,
+        "false_positives": 0,
+        "true_negatives": 261,
+        "false_negatives": 0,
+        "auc_roc": 1.0,
+        "auc_pr": 1.0,
+        "brier_score": 0.0,
+        "log_loss": 0.0001
+      },
+      "optimal_threshold": 0.9907351179198738
+    },
+    "random_forest": {
+      "test_metrics": {
+        "accuracy": 1.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "true_positives": 372,
+        "false_positives": 0,
+        "true_negatives": 261,
+        "false_negatives": 0,
+        "auc_roc": 1.0,
+        "auc_pr": 1.0,
+        "brier_score": 0.0005,
+        "log_loss": 0.005
+      },
+      "optimal_threshold": 0.7438435447593342
+    },
+    "logistic_regression": {
+      "test_metrics": {
+        "accuracy": 1.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "true_positives": 372,
+        "false_positives": 0,
+        "true_negatives": 261,
+        "false_negatives": 0,
+        "auc_roc": 1.0,
+        "auc_pr": 1.0,
+        "brier_score": 0.0004,
+        "log_loss": 0.0019
+      },
+      "optimal_threshold": 0.8984164584338499
+    }
+  },
+  "ensemble_weights": {
+    "xgboost": 0.35,
+    "lightgbm": 0.3,
+    "random_forest": 0.2,
+    "logistic_regression": 0.15
+  },
+  "feature_importances": {
+    "xgboost": [
+      {
+        "feature": "header_deficit",
+        "importance": 0.20303477346897125
+      },
+      {
+        "feature": "mx_present",
+        "importance": 0.14103372395038605
+      },
+      {
+        "feature": "asn_available",
+        "importance": 0.1338733285665512
+      },
+      {
+        "feature": "hyphen_count_norm",
+        "importance": 0.09677914530038834
+      },
+      {
+        "feature": "combosquatting_detected",
+        "importance": 0.08427446335554123
+      }
+    ],
+    "lightgbm": [
+      {
+        "feature": "domain_age_log",
+        "importance": 178.0
+      },
+      {
+        "feature": "header_deficit",
+        "importance": 163.0
+      },
+      {
+        "feature": "whois_privacy",
+        "importance": 75.0
+      },
+      {
+        "feature": "domain_length_norm",
+        "importance": 73.0
+      },
+      {
+        "feature": "unique_token_count_norm",
+        "importance": 43.0
+      }
+    ],
+    "random_forest": [
+      {
+        "feature": "mx_present",
+        "importance": 0.20086276211131238
+      },
+      {
+        "feature": "header_deficit",
+        "importance": 0.1757922977458225
+      },
+      {
+        "feature": "ssl_valid",
+        "importance": 0.16107644883913924
+      },
+      {
+        "feature": "asn_available",
+        "importance": 0.09329453116233591
+      },
+      {
+        "feature": "domain_age_log",
+        "importance": 0.07161872707249227
+      }
+    ],
+    "logistic_regression": [
+      {
+        "feature": "whois_privacy",
+        "importance": 4.224122155753708
+      },
+      {
+        "feature": "domain_age_log",
+        "importance": 3.608881070169385
+      },
+      {
+        "feature": "header_deficit",
+        "importance": 2.788135685459613
+      },
+      {
+        "feature": "suspicious_tld",
+        "importance": 2.631973346758195
+      },
+      {
+        "feature": "suspicious_registrar",
+        "importance": 2.4261058875368957
+      }
+    ]
+  }
+}
