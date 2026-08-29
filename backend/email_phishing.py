@@ -50,8 +50,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Pre-trained model paths (downloaded lazily)
 # ---------------------------------------------------------------------------
-_EMAIL_MODEL_NAME = "limnegri/bert-phishing-emails"
-_SMS_MODEL_NAME = "mariagrazia/bert-sms-phishing"
+_EMAIL_MODEL_NAME = "ElSlay/BERT-Phishing-Email-Model"
+_SMS_MODEL_NAME = "mariagrandury/distilbert-base-uncased-finetuned-sms-spam-detection"
 _LOCAL_CACHE_DIR = None  # uses HF default cache
 
 
