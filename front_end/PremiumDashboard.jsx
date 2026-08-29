@@ -57,6 +57,20 @@ export default function PremiumDashboard({
   setDeepScan,
   NAV_ITEMS,
   TMGC_VERSION,
+  emailText,
+  setEmailText,
+  emailResult,
+  loadingEmail,
+  analyzeEmailPhishing,
+  cnnResult,
+  loadingCNN,
+  analyzeCNN,
+  gnnResult,
+  loadingGNN,
+  analyzeGNN,
+  ensembleResult,
+  loadingEnsemble,
+  analyzeEnsemble,
 }) {
   const riskScore = data?.risk_score || 0;
   const dataInsufficient = Boolean(data?.data_completeness?.insufficient) || isAllDataNA(data);
@@ -1031,6 +1045,306 @@ export default function PremiumDashboard({
           </section>
           </>
           )}
+
+          {/* Email Phishing Analysis (BERT) */}
+          {currentView === "email-analysis" && (
+            <section id="email-analysis" className="tmgc-card rounded-2xl p-6">
+              <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">
+                <span className="text-green-400">📧</span> EMAIL PHISHING ANALYSIS (BERT/RoBERTa)
+              </h3>
+              <p className="mt-2 text-xs text-zinc-500">
+                Analyze email content for phishing indicators using transformer-based NLP models.
+              </p>
+              
+              <div className="mt-4">
+                <label className="mb-2 block text-[10px] font-bold tracking-[0.2em] text-green-700">EMAIL CONTENT</label>
+                <textarea
+                  className="w-full rounded-lg border border-green-900/50 bg-black/60 px-4 py-3 text-sm text-green-100 outline-none transition focus:border-green-500/60 placeholder:text-green-950"
+                  rows={6}
+                  value={emailText}
+                  onChange={(e) => setEmailText(e.target.value)}
+                  placeholder="Paste email content here..."
+                />
+                <button
+                  type="button"
+                  className="mt-3 flex items-center gap-2 rounded-lg border border-green-500/60 bg-green-500/10 px-6 py-2.5 text-sm font-bold tracking-wide text-green-400 transition hover:bg-green-500/20 disabled:opacity-40"
+                  disabled={loadingEmail || !emailText.trim()}
+                  onClick={analyzeEmailPhishing}
+                >
+                  {loadingEmail ? "ANALYZING..." : "ANALYZE WITH BERT"}
+                </button>
+              </div>
+              
+              {emailResult && (
+                <div className="mt-6 rounded-xl border border-green-900/30 bg-black/20 p-4">
+                  <h4 className="text-sm font-bold text-green-400">BERT ANALYSIS RESULTS</h4>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                      <p className="text-[10px] font-bold text-zinc-500">PHISHING SCORE</p>
+                      <p className="mt-1 text-2xl font-bold text-green-400">{emailResult.score?.toFixed(1) || 0}%</p>
+                    </div>
+                    <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                      <p className="text-[10px] font-bold text-zinc-500">CONFIDENCE</p>
+                      <p className="mt-1 text-2xl font-bold text-green-400">{emailResult.confidence?.toFixed(1) || 0}%</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 rounded-lg border border-green-950/50 bg-black/30 p-3">
+                    <p className="text-[10px] font-bold text-zinc-500">VERDICT</p>
+                    <p className={`mt-1 text-lg font-bold ${
+                      emailResult.verdict === "phishing" ? "text-red-400" :
+                      emailResult.verdict === "suspicious" ? "text-orange-400" :
+                      "text-green-400"
+                    }`}>{emailResult.verdict?.toUpperCase() || "UNKNOWN"}</p>
+                  </div>
+                  {emailResult.probabilities && (
+                    <div className="mt-3">
+                      <p className="text-[10px] font-bold text-zinc-500">PROBABILITIES</p>
+                      <div className="mt-2 space-y-2">
+                        <div>
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-400">Phishing</span>
+                            <span className="text-red-400">{(emailResult.probabilities.phishing * 100).toFixed(1)}%</span>
+                          </div>
+                          <div className="mt-1 h-2 overflow-hidden rounded-full bg-zinc-800/60">
+                            <div className="h-full rounded-full bg-red-500 transition-all duration-500" style={{ width: `${emailResult.probabilities.phishing * 100}%` }} />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-400">Legitimate</span>
+                            <span className="text-green-400">{(emailResult.probabilities.legitimate * 100).toFixed(1)}%</span>
+                          </div>
+                          <div className="mt-1 h-2 overflow-hidden rounded-full bg-zinc-800/60">
+                            <div className="h-full rounded-full bg-green-500 transition-all duration-500" style={{ width: `${emailResult.probabilities.legitimate * 100}%` }} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* CNN Visual Analysis */}
+          {currentView === "cnn-analysis" && (
+            <section id="cnn-analysis" className="tmgc-card rounded-2xl p-6">
+              <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">
+                <span className="text-green-400">🖼️</span> CNN VISUAL/DOM ANALYSIS
+              </h3>
+              <p className="mt-2 text-xs text-zinc-500">
+                Analyze webpage DOM structure and visual features using Convolutional Neural Network.
+              </p>
+              
+              {!data ? (
+                <div className="mt-4 rounded-lg border border-zinc-600/30 bg-zinc-900/20 p-4">
+                  <p className="text-sm text-zinc-400">Run a domain analysis first to enable CNN analysis.</p>
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="mt-4 flex items-center gap-2 rounded-lg border border-green-500/60 bg-green-500/10 px-6 py-2.5 text-sm font-bold tracking-wide text-green-400 transition hover:bg-green-500/20 disabled:opacity-40"
+                    disabled={loadingCNN}
+                    onClick={analyzeCNN}
+                  >
+                    {loadingCNN ? "ANALYZING..." : "RUN CNN ANALYSIS"}
+                  </button>
+                  
+                  {cnnResult && (
+                    <div className="mt-6 rounded-xl border border-green-900/30 bg-black/20 p-4">
+                      <h4 className="text-sm font-bold text-green-400">CNN ANALYSIS RESULTS</h4>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">VISUAL RISK SCORE</p>
+                          <p className="mt-1 text-2xl font-bold text-green-400">{cnnResult.score?.toFixed(1) || 0}%</p>
+                        </div>
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">CONFIDENCE</p>
+                          <p className="mt-1 text-2xl font-bold text-green-400">{cnnResult.confidence?.toFixed(1) || 0}%</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 rounded-lg border border-green-950/50 bg-black/30 p-3">
+                        <p className="text-[10px] font-bold text-zinc-500">VERDICT</p>
+                        <p className={`mt-1 text-lg font-bold ${
+                          cnnResult.verdict === "phishing" ? "text-red-400" :
+                          cnnResult.verdict === "suspicious" ? "text-orange-400" :
+                          "text-green-400"
+                        }`}>{cnnResult.verdict?.toUpperCase() || "UNKNOWN"}</p>
+                      </div>
+                      {cnnResult.risk_indicators > 0 && (
+                        <div className="mt-3">
+                          <p className="text-[10px] font-bold text-zinc-500">RISK INDICATORS: {cnnResult.risk_indicators}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
+          {/* GNN Graph Analysis */}
+          {currentView === "gnn-analysis" && (
+            <section id="gnn-analysis" className="tmgc-card rounded-2xl p-6">
+              <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">
+                <span className="text-green-400">🕸️</span> GNN GRAPH ANALYSIS
+              </h3>
+              <p className="mt-2 text-xs text-zinc-500">
+                Analyze domain relationships and infrastructure clustering using Graph Neural Network features.
+              </p>
+              
+              {!data ? (
+                <div className="mt-4 rounded-lg border border-zinc-600/30 bg-zinc-900/20 p-4">
+                  <p className="text-sm text-zinc-400">Run a domain analysis first to enable GNN analysis.</p>
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="mt-4 flex items-center gap-2 rounded-lg border border-green-500/60 bg-green-500/10 px-6 py-2.5 text-sm font-bold tracking-wide text-green-400 transition hover:bg-green-500/20 disabled:opacity-40"
+                    disabled={loadingGNN}
+                    onClick={analyzeGNN}
+                  >
+                    {loadingGNN ? "ANALYZING..." : "RUN GNN ANALYSIS"}
+                  </button>
+                  
+                  {gnnResult && (
+                    <div className="mt-6 rounded-xl border border-green-900/30 bg-black/20 p-4">
+                      <h4 className="text-sm font-bold text-green-400">GNN ANALYSIS RESULTS</h4>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">GRAPH RISK SCORE</p>
+                          <p className="mt-1 text-2xl font-bold text-green-400">{gnnResult.score?.toFixed(1) || 0}%</p>
+                        </div>
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">CONFIDENCE</p>
+                          <p className="mt-1 text-2xl font-bold text-green-400">{gnnResult.confidence?.toFixed(1) || 0}%</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 rounded-lg border border-green-950/50 bg-black/30 p-3">
+                        <p className="text-[10px] font-bold text-zinc-500">VERDICT</p>
+                        <p className={`mt-1 text-lg font-bold ${
+                          gnnResult.verdict === "phishing" ? "text-red-400" :
+                          gnnResult.verdict === "suspicious" ? "text-orange-400" :
+                          "text-green-400"
+                        }`}>{gnnResult.verdict?.toUpperCase() || "UNKNOWN"}</p>
+                      </div>
+                      {gnnResult.findings && gnnResult.findings.length > 0 && (
+                        <div className="mt-3">
+                          <p className="text-[10px] font-bold text-zinc-500">FINDINGS</p>
+                          <ul className="mt-2 space-y-1">
+                            {gnnResult.findings.map((finding, i) => (
+                              <li key={i} className="text-xs text-zinc-400">• {finding}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
+          {/* Transformer Ensemble */}
+          {currentView === "transformer-ensemble" && (
+            <section id="transformer-ensemble" className="tmgc-card rounded-2xl p-6">
+              <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">
+                <span className="text-green-400">🧠</span> TRANSFORMER ENSEMBLE
+              </h3>
+              <p className="mt-2 text-xs text-zinc-500">
+                Combined analysis using BERT + CNN + GNN + XGBoost for comprehensive threat detection.
+              </p>
+              
+              {!data ? (
+                <div className="mt-4 rounded-lg border border-zinc-600/30 bg-zinc-900/20 p-4">
+                  <p className="text-sm text-zinc-400">Run a domain analysis first to enable ensemble analysis.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-2 block text-[10px] font-bold tracking-[0.2em] text-green-700">EMAIL TEXT (OPTIONAL)</label>
+                      <textarea
+                        className="w-full rounded-lg border border-green-900/50 bg-black/60 px-4 py-3 text-sm text-green-100 outline-none transition focus:border-green-500/60 placeholder:text-green-950"
+                        rows={3}
+                        value={emailText}
+                        onChange={(e) => setEmailText(e.target.value)}
+                        placeholder="Optional: paste email content for BERT analysis"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        className="flex items-center gap-2 rounded-lg border border-green-500/60 bg-green-500/10 px-6 py-2.5 text-sm font-bold tracking-wide text-green-400 transition hover:bg-green-500/20 disabled:opacity-40"
+                        disabled={loadingEnsemble}
+                        onClick={analyzeEnsemble}
+                      >
+                        {loadingEnsemble ? "ANALYZING..." : "RUN FULL ENSEMBLE"}
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {ensembleResult && (
+                    <div className="mt-6 rounded-xl border border-green-900/30 bg-black/20 p-4">
+                      <h4 className="text-sm font-bold text-green-400">ENSEMBLE RESULTS</h4>
+                      
+                      {/* Main Score */}
+                      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">ENSEMBLE SCORE</p>
+                          <p className="mt-1 text-3xl font-bold text-green-400">{ensembleResult.ensemble_score?.toFixed(1) || 0}%</p>
+                        </div>
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">CONFIDENCE</p>
+                          <p className="mt-1 text-3xl font-bold text-green-400">{ensembleResult.ensemble_confidence?.toFixed(1) || 0}%</p>
+                        </div>
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">VERDICT</p>
+                          <p className={`mt-1 text-xl font-bold ${
+                            ensembleResult.ensemble_verdict === "phishing" ? "text-red-400" :
+                            ensembleResult.ensemble_verdict === "suspicious" ? "text-orange-400" :
+                            "text-green-400"
+                          }`}>{ensembleResult.ensemble_verdict?.toUpperCase() || "UNKNOWN"}</p>
+                        </div>
+                      </div>
+                      
+                      {/* Model Breakdown */}
+                      {ensembleResult.model_scores && (
+                        <div className="mt-4">
+                          <p className="text-[10px] font-bold text-zinc-500">MODEL BREAKDOWN</p>
+                          <div className="mt-2 space-y-2">
+                            {Object.entries(ensembleResult.model_scores).map(([model, score]) => (
+                              <div key={model} className="flex items-center justify-between rounded-lg border border-green-950/50 bg-black/30 p-2">
+                                <span className="text-xs text-zinc-400 uppercase">{model}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-bold text-green-400">{score?.toFixed(1) || 0}%</span>
+                                  <span className="text-[10px] text-zinc-500">(weight: {((ensembleResult.model_weights?.[model] || 0) * 100).toFixed(0)}%)</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Findings */}
+                      {ensembleResult.findings && ensembleResult.findings.length > 0 && (
+                        <div className="mt-4">
+                          <p className="text-[10px] font-bold text-zinc-500">FINDINGS</p>
+                          <ul className="mt-2 space-y-1">
+                            {ensembleResult.findings.map((finding, i) => (
+                              <li key={i} className="text-xs text-zinc-400">• {finding}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          )}
         </main>
       </div>
     </div>
@@ -1056,6 +1370,10 @@ function NavIcon({ name, active, className = "" }) {
     location: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z M15 11a3 3 0 11-6 0 3 3 0 016 0z" />,
     user: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />,
     brand: <><circle cx="12" cy="12" r="9" strokeWidth={1.5} fill="none" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 7v2M12 13v5" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M8 12h8" /></>,
+    email: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />,
+    visual: <><rect x="3" y="3" width="18" height="18" rx="2" strokeWidth={1.5} fill="none" /><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 15l-5-5L5 21" /></>,
+    graph: <><circle cx="6" cy="6" r="3" strokeWidth={1.5} fill="none" /><circle cx="18" cy="18" r="3" strokeWidth={1.5} fill="none" /><circle cx="18" cy="6" r="3" strokeWidth={1.5} fill="none" /><circle cx="6" cy="18" r="3" strokeWidth={1.5} fill="none" /><path strokeLinecap="round" strokeWidth={1.5} d="M8.5 7.5l7 7M15.5 7.5l-7 7" /></>,
+    ensemble: <><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></>,
   };
   return (
     <svg className={`h-4 w-4 shrink-0 ${color} ${className}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">

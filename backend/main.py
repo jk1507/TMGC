@@ -1177,6 +1177,23 @@ rate_limiter = RateLimiter(
     requests_per_hour=int(os.getenv("RATE_LIMIT_PER_HOUR", "200")),
 )
 
+app = FastAPI(title=APP_NAME, version="1.1.0")
+
+# CORS configuration - restrictive by default, configurable via env
+# In production, set ALLOWED_ORIGINS env var to your frontend domain(s)
+import os
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in allowed_origins if o.strip()],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    max_age=3600,
+)
+
+
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     # Skip rate limiting for health checks
@@ -1211,22 +1228,6 @@ async def rate_limit_middleware(request: Request, call_next):
     response.headers["X-RateLimit-Limit-Hour"] = str(rate_limiter.requests_per_hour)
     response.headers["X-RateLimit-Remaining-Hour"] = str(limits["hour_remaining"])
     return response
-
-app = FastAPI(title=APP_NAME, version="1.1.0")
-
-# CORS configuration - restrictive by default, configurable via env
-# In production, set ALLOWED_ORIGINS env var to your frontend domain(s)
-import os
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in allowed_origins if o.strip()],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-    max_age=3600,
-)
 
 
 # Global exception handlers
@@ -3753,6 +3754,61 @@ if DOM_VISUAL_AVAILABLE:
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid image data: {e}")
 
+# --- Transformer Ensemble ---
+try:
+    from transformer_ensemble import run_full_ensemble, analyze_email_bert, analyze_visual_cnn, analyze_graph_gnn
+    TRANSFORMER_ENSEMBLE_AVAILABLE = True
+except ImportError:
+    TRANSFORMER_ENSEMBLE_AVAILABLE = False
+
+if TRANSFORMER_ENSEMBLE_AVAILABLE:
+    @app.post("/api/v1/transformer-ensemble")
+    async def transformer_ensemble_endpoint(payload: dict = Body(...)) -> dict:
+        """Run full transformer ensemble analysis combining BERT, CNN, GNN, and XGBoost."""
+        email_text = payload.get("email_text", "")
+        dom_features = payload.get("dom_features", {})
+        visual_features = payload.get("visual_features", {})
+        graph_data = payload.get("graph_data", {})
+        xgboost_result = payload.get("xgboost_result", {})
+        
+        result = run_full_ensemble(
+            email_text=email_text,
+            dom_features=dom_features,
+            visual_features=visual_features,
+            graph_data=graph_data,
+            xgboost_result=xgboost_result,
+        )
+        return result
+
+    @app.post("/api/v1/bert-analyze")
+    async def bert_analyze_endpoint(payload: dict = Body(...)) -> dict:
+        """Analyze text using BERT/RoBERTa transformer model."""
+        text = payload.get("text", "")
+        model_type = payload.get("model_type", "email")
+        if not text:
+            raise HTTPException(status_code=400, detail="Text is required")
+        result = analyze_email_bert(text=text, model_type=model_type)
+        return result
+
+    @app.post("/api/v1/cnn-analyze")
+    async def cnn_analyze_endpoint(payload: dict = Body(...)) -> dict:
+        """Analyze DOM/visual features using CNN model."""
+        dom_features = payload.get("dom_features", {})
+        visual_features = payload.get("visual_features", {})
+        if not dom_features:
+            raise HTTPException(status_code=400, detail="DOM features are required")
+        result = analyze_visual_cnn(dom_features=dom_features, visual_features=visual_features)
+        return result
+
+    @app.post("/api/v1/gnn-analyze")
+    async def gnn_analyze_endpoint(payload: dict = Body(...)) -> dict:
+        """Analyze domain graph using GNN-based analysis."""
+        graph_data = payload.get("graph_data", {})
+        if not graph_data:
+            raise HTTPException(status_code=400, detail="Graph data is required")
+        result = analyze_graph_gnn(graph_data=graph_data)
+        return result
+
 # --- v4.0 Feature Status ---
 @app.get("/api/v1/features")
 async def features_status_endpoint() -> dict:
@@ -3767,6 +3823,7 @@ async def features_status_endpoint() -> dict:
             "misp_otx": MISP_OTX_AVAILABLE,
             "sandbox_analysis": SANDBOX_ANALYSIS_AVAILABLE,
             "dom_visual_analysis": DOM_VISUAL_AVAILABLE,
+            "transformer_ensemble": TRANSFORMER_ENSEMBLE_AVAILABLE,
         },
         "v3_features": {
             "threat_intel_feeds": THREAT_INTEL_AVAILABLE,

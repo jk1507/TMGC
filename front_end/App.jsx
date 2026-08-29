@@ -46,6 +46,10 @@ const NAV_ITEMS = [
   { id: "reputation", label: "Reputation Lookup", icon: "star" },
   { id: "entity-attribution", label: "Entity Attribution", icon: "user" },
   { id: "brand-impersonation", label: "Brand Impersonation", icon: "brand" },
+  { id: "email-analysis", label: "Email Phishing (BERT)", icon: "email" },
+  { id: "cnn-analysis", label: "CNN Visual Analysis", icon: "visual" },
+  { id: "gnn-analysis", label: "GNN Graph Analysis", icon: "graph" },
+  { id: "transformer-ensemble", label: "Transformer Ensemble", icon: "ensemble" },
   { id: "reports", label: "Reports", icon: "report" },
   { id: "saved-scans", label: "Saved Scans", icon: "bookmark" },
   { id: "settings", label: "Settings", icon: "settings" },
@@ -78,6 +82,20 @@ function App() {
   const [deepScan, setDeepScan] = useState(false);
   const [scanMeta, setScanMeta] = useState({ startedAt: null, completedAt: null, durationMs: null });
   const exportRef = useRef(null);
+  
+  // New feature states
+  const [emailText, setEmailText] = useState("");
+  const [emailResult, setEmailResult] = useState(null);
+  const [loadingEmail, setLoadingEmail] = useState(false);
+  
+  const [cnnResult, setCnnResult] = useState(null);
+  const [loadingCNN, setLoadingCNN] = useState(false);
+  
+  const [gnnResult, setGnnResult] = useState(null);
+  const [loadingGNN, setLoadingGNN] = useState(false);
+  
+  const [ensembleResult, setEnsembleResult] = useState(null);
+  const [loadingEnsemble, setLoadingEnsemble] = useState(false);
 
   const data = useMemo(() => normalizeResult(result), [result]);
   const riskScore = data?.risk_score || 0;
@@ -263,6 +281,131 @@ throw new Error(
     setLoadingAI(false);
   }
 }
+
+  // Email Phishing Analysis (BERT)
+  async function analyzeEmailPhishing() {
+    if (!emailText.trim()) return;
+    
+    setLoadingEmail(true);
+    setEmailResult(null);
+    setError("");
+    
+    try {
+      const API_BASE = isDev ? "" : (import.meta.env.VITE_API_URL || "http://localhost:8000");
+      const response = await fetch(`${API_BASE}/api/v1/bert-analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: emailText, model_type: "email" }),
+      });
+      
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || `Backend returned HTTP ${response.status}`);
+      }
+      
+      const payload = await response.json();
+      setEmailResult(payload);
+    } catch (err) {
+      setError(err.message || "Email analysis failed.");
+    } finally {
+      setLoadingEmail(false);
+    }
+  }
+
+  // CNN Visual Analysis
+  async function analyzeCNN() {
+    if (!data) return;
+    
+    setLoadingCNN(true);
+    setCnnResult(null);
+    setError("");
+    
+    try {
+      const API_BASE = isDev ? "" : (import.meta.env.VITE_API_URL || "http://localhost:8000");
+      const response = await fetch(`${API_BASE}/api/v1/cnn-analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dom_features: data.score_components || {} }),
+      });
+      
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || `Backend returned HTTP ${response.status}`);
+      }
+      
+      const payload = await response.json();
+      setCnnResult(payload);
+    } catch (err) {
+      setError(err.message || "CNN analysis failed.");
+    } finally {
+      setLoadingCNN(false);
+    }
+  }
+
+  // GNN Graph Analysis
+  async function analyzeGNN() {
+    if (!data) return;
+    
+    setLoadingGNN(true);
+    setGnnResult(null);
+    setError("");
+    
+    try {
+      const API_BASE = isDev ? "" : (import.meta.env.VITE_API_URL || "http://localhost:8000");
+      const response = await fetch(`${API_BASE}/api/v1/gnn-analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graph_data: data.score_components || {} }),
+      });
+      
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || `Backend returned HTTP ${response.status}`);
+      }
+      
+      const payload = await response.json();
+      setGnnResult(payload);
+    } catch (err) {
+      setError(err.message || "GNN analysis failed.");
+    } finally {
+      setLoadingGNN(false);
+    }
+  }
+
+  // Transformer Ensemble
+  async function analyzeEnsemble() {
+    if (!data) return;
+    
+    setLoadingEnsemble(true);
+    setEnsembleResult(null);
+    setError("");
+    
+    try {
+      const API_BASE = isDev ? "" : (import.meta.env.VITE_API_URL || "http://localhost:8000");
+      const response = await fetch(`${API_BASE}/api/v1/transformer-ensemble`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email_text: emailText,
+          dom_features: data.score_components || {},
+          graph_data: data.score_components || {},
+          xgboost_result: data.ml_result || {},
+        }),
+      });
+      
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || `Backend returned HTTP ${response.status}`);
+      }
+      
+      const payload = await response.json();
+      setEnsembleResult(payload);
+    } catch (err) {
+      setError(err.message || "Ensemble analysis failed.");
+    } finally {
+      setLoadingEnsemble(false);
+    }
+  }
 
   async function exportExcel() {
   if (!data) return;
@@ -595,6 +738,20 @@ ${commands}
       setDeepScan={setDeepScan}
       NAV_ITEMS={NAV_ITEMS}
       TMGC_VERSION={TMGC_VERSION}
+      emailText={emailText}
+      setEmailText={setEmailText}
+      emailResult={emailResult}
+      loadingEmail={loadingEmail}
+      analyzeEmailPhishing={analyzeEmailPhishing}
+      cnnResult={cnnResult}
+      loadingCNN={loadingCNN}
+      analyzeCNN={analyzeCNN}
+      gnnResult={gnnResult}
+      loadingGNN={loadingGNN}
+      analyzeGNN={analyzeGNN}
+      ensembleResult={ensembleResult}
+      loadingEnsemble={loadingEnsemble}
+      analyzeEnsemble={analyzeEnsemble}
     />
   );
 }
