@@ -3,8 +3,13 @@ import PremiumDashboard, { getTrustScore } from "./PremiumDashboard.jsx";
 import { RAW_TABS } from "./dashboardShared.jsx";
 
 const isDev = import.meta.env.DEV;
-const API_URL = isDev ? "/api/v1/analyze" : (import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1/analyze");
-const AI_ANALYSIS_API = isDev ? "/api/v1/ai-analysis" : (import.meta.env.VITE_AI_ANALYSIS_API || "http://localhost:8000/api/v1/ai-analysis");
+
+// API URL configuration:
+// - Development: Use Vite proxy (requests go to /api/... which proxies to backend)
+// - Production: Use VITE_API_URL env var (set in Vercel) OR fallback to relative /api/
+const API_BASE = isDev ? "" : (import.meta.env.VITE_API_URL || "");
+const API_URL = `${API_BASE}/api/v1/analyze`;
+const AI_ANALYSIS_API = `${API_BASE}/api/v1/ai-analysis`;
 const KEYWORDS = [
   "CRITICAL",
   "HIGH RISK",
@@ -81,6 +86,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deepScan, setDeepScan] = useState(false);
   const [scanMeta, setScanMeta] = useState({ startedAt: null, completedAt: null, durationMs: null });
+  const [mlInferenceMs, setMlInferenceMs] = useState(null);
   const exportRef = useRef(null);
   
   // New feature states
@@ -154,6 +160,7 @@ function App() {
     setError("");
     setResult(null);
     setAiReport(null);
+    setMlInferenceMs(null);
     setScanMeta({ startedAt, completedAt: null, durationMs: null });
     setLogs([`RETRO_INTEL SHELL > TARGET=${cleanTarget}`]);
 
@@ -164,6 +171,7 @@ function App() {
     });
 
     try {
+      const fetchStart = performance.now();
       const response = await fetch(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -176,7 +184,15 @@ function App() {
       }
 
       const payload = await response.json();
-      setResult(payload);
+      const totalMs = Math.round(performance.now() - fetchStart);
+      setMlInferenceMs(totalMs);
+      setResult({
+        ...payload,
+        timing: {
+          ...(payload.timing || {}),
+          frontend_total_ms: totalMs,
+        },
+      });
       setLogs((current) => [
         ...current,
         ">> AI CORE VERDICT RECEIVED.",
@@ -291,7 +307,6 @@ throw new Error(
     setError("");
     
     try {
-      const API_BASE = isDev ? "" : (import.meta.env.VITE_API_URL || "http://localhost:8000");
       const response = await fetch(`${API_BASE}/api/v1/bert-analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -321,7 +336,6 @@ throw new Error(
     setError("");
     
     try {
-      const API_BASE = isDev ? "" : (import.meta.env.VITE_API_URL || "http://localhost:8000");
       const response = await fetch(`${API_BASE}/api/v1/cnn-analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -351,7 +365,6 @@ throw new Error(
     setError("");
     
     try {
-      const API_BASE = isDev ? "" : (import.meta.env.VITE_API_URL || "http://localhost:8000");
       const response = await fetch(`${API_BASE}/api/v1/gnn-analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -381,7 +394,6 @@ throw new Error(
     setError("");
     
     try {
-      const API_BASE = isDev ? "" : (import.meta.env.VITE_API_URL || "http://localhost:8000");
       const response = await fetch(`${API_BASE}/api/v1/transformer-ensemble`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -752,6 +764,7 @@ ${commands}
       ensembleResult={ensembleResult}
       loadingEnsemble={loadingEnsemble}
       analyzeEnsemble={analyzeEnsemble}
+      mlInferenceMs={mlInferenceMs}
     />
   );
 }
