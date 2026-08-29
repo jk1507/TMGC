@@ -14,6 +14,8 @@ import ssl
 import urllib.request
 import urllib.error
 
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 1))
+
 # Import stealth proxy/rate-limiting module
 from stealth import setup_stealth, build_stealth_opener, stealth_build_request
 
@@ -64,7 +66,7 @@ try:
 except ImportError:
     x509 = None
 
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -93,6 +95,13 @@ try:
         analyze_certificate_transparency as utils_analyze_certificate_transparency,
         analyze_dns_records as utils_analyze_dns_records,
         enumerate_subdomains as utils_enumerate_subdomains,
+        # Unified TLD lists (single source of truth)
+        SUSPICIOUS_TLDS_DOT,
+        HIGH_RISK_TLDS_DOT,
+        DARK_WEB_TLDS_DOT,
+        SUSPICIOUS_TLDS,
+        HIGH_RISK_TLDS,
+        DARK_WEB_TLDS,
     )
 except ImportError:
     extract_features = None
@@ -110,9 +119,59 @@ except ImportError:
     utils_analyze_certificate_transparency = None
     utils_analyze_dns_records = None
     utils_enumerate_subdomains = None
+    # Fallback TLD lists
+    SUSPICIOUS_TLDS_DOT = frozenset({".top", ".xyz", ".click", ".work", ".live", ".loan", ".cc", ".tk", ".gq", ".ml"})
+    HIGH_RISK_TLDS_DOT = frozenset({".xyz", ".top", ".tk", ".ml", ".ga", ".cf", ".gq", ".pw", ".ws"})
+    DARK_WEB_TLDS_DOT = frozenset({".onion", ".i2p", ".bit", ".b32", ".loki"})
+    SUSPICIOUS_TLDS = frozenset({"top", "xyz", "click", "work", "live", "loan", "cc", "tk", "gq", "ml"})
+    HIGH_RISK_TLDS = frozenset({"xyz", "top", "tk", "ml", "ga", "cf", "gq", "pw", "ws"})
+    DARK_WEB_TLDS = frozenset({"onion", "i2p", "bit", "b32", "loki"})
 
 # Import owner image detection module
 from owner_image_detection import analyze_owner_images
+
+# Import v4.0 new modules
+try:
+    from email_phishing import analyze_email_phishing, analyze_sms_phishing, analyze_email_headers
+    EMAIL_PHISHING_AVAILABLE = True
+except ImportError:
+    EMAIL_PHISHING_AVAILABLE = False
+
+try:
+    from graph_analysis import analyze_domain_graph, DomainRelationshipGraph
+    GRAPH_ANALYSIS_AVAILABLE = True
+except ImportError:
+    GRAPH_ANALYSIS_AVAILABLE = False
+
+try:
+    from adversarial_detection import detect_adversarial_content, scan_adversarial
+    ADVERSARIAL_DETECTION_AVAILABLE = True
+except ImportError:
+    ADVERSARIAL_DETECTION_AVAILABLE = False
+
+try:
+    from continuous_learning import get_pipeline_status, submit_feedback_and_check_retrain, train_model, detect_drift
+    CONTINUOUS_LEARNING_AVAILABLE = True
+except ImportError:
+    CONTINUOUS_LEARNING_AVAILABLE = False
+
+try:
+    from misp_otx import query_all_threat_intel, check_threat_intel
+    MISP_OTX_AVAILABLE = True
+except ImportError:
+    MISP_OTX_AVAILABLE = False
+
+try:
+    from sandbox_analysis import analyze_url_behavior, analyze_attachment, analyze_sandbox
+    SANDBOX_ANALYSIS_AVAILABLE = True
+except ImportError:
+    SANDBOX_ANALYSIS_AVAILABLE = False
+
+try:
+    from dom_visual_analysis import analyze_dom_structure, analyze_webpage_visual, compare_visual_similarity, extract_cnn_features
+    DOM_VISUAL_AVAILABLE = True
+except ImportError:
+    DOM_VISUAL_AVAILABLE = False
 
 # Import brand impersonation detection engine
 try:
@@ -240,7 +299,7 @@ def _try_rdap(ip: str, base_url: str) -> str | None:
     try:
         url = f"{base_url}/ip/{ip}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             lines = []
 
@@ -470,7 +529,7 @@ def fallback_ip_whois(ip: str) -> str:
 def fallback_ssl_probe(domain: str) -> str:
     """SSL fallback using python standard ssl/socket libraries and cryptography."""
     try:
-        pem = ssl.get_server_certificate((domain, 443), timeout=3.0)
+        pem = ssl.get_server_certificate((domain, 443), timeout=2.0)
         if not x509:
             return "cryptography library not available for native SSL parsing."
             
@@ -506,7 +565,7 @@ async def fallback_port_scan(domain: str, ports: list[int]) -> str:
         try:
             _, writer = await asyncio.wait_for(
                 asyncio.open_connection(domain, port),
-                timeout=2.0
+                timeout=1.0
             )
             writer.close()
             await writer.wait_closed()
@@ -553,7 +612,7 @@ def _do_curl(url: str) -> str | None:
         opener = build_stealth_opener(handler)
 
         output = []
-        with opener.open(req, timeout=5.0) as resp:
+        with opener.open(req, timeout=3.0) as resp:
             # Emit redirect trace blocks
             for orig_url, code, headers in handler.trace:
                 output.append(f"HTTP/1.1 {code} Redirect")
@@ -841,7 +900,7 @@ def get_ml_prediction(domain: str, parsed_domain: Any, whois_raw_stdout: str, ha
         min(features.get("subdomain_count", len(parts) - 2) / 5.0, 1.0),      # 3: subdomain depth
         min(features.get("entropy", 3.0) / 5.0, 1.0),                         # 4: Shannon entropy
         features.get("consonant_ratio", consonant_ratio),                      # 5: consonant ratio
-        float(features.get("suspicious_tld", ("." + parts[-1]) in SUSPICIOUS_TLDS)),  # 6: suspicious TLD
+        float(features.get("suspicious_tld", parts[-1] in SUSPICIOUS_TLDS)),  # 6: suspicious TLD
         float(features.get("has_suspicious_keywords", any(k in clean for k in KNOWN_BRANDS))), # 7: has brand keywords
         float(features.get("is_ip_like", bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", clean)))), # 8: IP-like
         float(features.get("has_excessive_hyphens", has_excessive_hyphens)),   # 9: >=3 hyphens
@@ -896,7 +955,7 @@ def get_ml_prediction(domain: str, parsed_domain: Any, whois_raw_stdout: str, ha
 
 
 APP_NAME = "RETRO_INTEL: OSINT Domain Threat Analyzer"
-COMMAND_TIMEOUT_SECONDS = 6
+COMMAND_TIMEOUT_SECONDS = 3
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$")
 IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 HEADER_NAMES = [
@@ -925,8 +984,7 @@ HEADER_SCORE_WEIGHTS = {
     "X-Content-Type-Options": 2,
     "Referrer-Policy": 1,
 }
-COMMON_PORTS = [21, 22, 23, 80, 443, 445, 3389, 5900, 8080, 8443]
-SUSPICIOUS_TLDS = {".top", ".xyz", ".click", ".work", ".live", ".loan", ".cc", ".tk", ".gq", ".ml"}
+COMMON_PORTS = [22, 80, 443, 8080, 8443]
 KNOWN_BRANDS = [
     "amazon",
     "google",
@@ -1000,6 +1058,7 @@ _COUNTRY_NAME_TO_CODE: dict[str, str] = {
 
 class AnalyzeRequest(BaseModel):
     url: str = Field(min_length=3, max_length=2048)
+    deep_scan: bool = False
 
 
 class CommandResult(BaseModel):
@@ -1078,21 +1137,123 @@ class ParsedDomainWhois:
 # Set HTTP_PROXY / HTTPS_PROXY env vars to enable proxy support
 setup_stealth()
 
+# Simple in-memory rate limiter
+from collections import defaultdict
+import time
+
+class RateLimiter:
+    def __init__(self, requests_per_minute: int = 30, requests_per_hour: int = 200):
+        self.requests_per_minute = requests_per_minute
+        self.requests_per_hour = requests_per_hour
+        self.minute_buckets: dict[str, list[float]] = defaultdict(list)
+        self.hour_buckets: dict[str, list[float]] = defaultdict(list)
+    
+    def is_allowed(self, key: str) -> tuple[bool, dict[str, int]]:
+        now = time.time()
+        minute_ago = now - 60
+        hour_ago = now - 3600
+        
+        # Clean old entries
+        self.minute_buckets[key] = [t for t in self.minute_buckets[key] if t > minute_ago]
+        self.hour_buckets[key] = [t for t in self.hour_buckets[key] if t > hour_ago]
+        
+        minute_count = len(self.minute_buckets[key])
+        hour_count = len(self.hour_buckets[key])
+        
+        allowed = minute_count < self.requests_per_minute and hour_count < self.requests_per_hour
+        
+        if allowed:
+            self.minute_buckets[key].append(now)
+            self.hour_buckets[key].append(now)
+        
+        return allowed, {
+            "minute_remaining": max(0, self.requests_per_minute - minute_count - (1 if allowed else 0)),
+            "hour_remaining": max(0, self.requests_per_hour - hour_count - (1 if allowed else 0)),
+            "retry_after": 60 if minute_count >= self.requests_per_minute else 3600 if hour_count >= self.requests_per_hour else 0,
+        }
+
+rate_limiter = RateLimiter(
+    requests_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "30")),
+    requests_per_hour=int(os.getenv("RATE_LIMIT_PER_HOUR", "200")),
+)
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    # Skip rate limiting for health checks
+    if request.url.path in ("/health", "/docs", "/openapi.json", "/redoc"):
+        return await call_next(request)
+    
+    # Use client IP as key (in production, use X-Forwarded-For with trusted proxy)
+    client_ip = request.client.host if request.client else "unknown"
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+    
+    allowed, limits = rate_limiter.is_allowed(client_ip)
+    
+    if not allowed:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Please try again later."},
+            headers={
+                "X-RateLimit-Limit-Minute": str(rate_limiter.requests_per_minute),
+                "X-RateLimit-Remaining-Minute": str(limits["minute_remaining"]),
+                "X-RateLimit-Limit-Hour": str(rate_limiter.requests_per_hour),
+                "X-RateLimit-Remaining-Hour": str(limits["hour_remaining"]),
+                "Retry-After": str(limits["retry_after"]),
+            },
+        )
+    
+    response = await call_next(request)
+    response.headers["X-RateLimit-Limit-Minute"] = str(rate_limiter.requests_per_minute)
+    response.headers["X-RateLimit-Remaining-Minute"] = str(limits["minute_remaining"])
+    response.headers["X-RateLimit-Limit-Hour"] = str(rate_limiter.requests_per_hour)
+    response.headers["X-RateLimit-Remaining-Hour"] = str(limits["hour_remaining"])
+    return response
+
 app = FastAPI(title=APP_NAME, version="1.1.0")
+
+# CORS configuration - restrictive by default, configurable via env
+# In production, set ALLOWED_ORIGINS env var to your frontend domain(s)
+import os
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "null",
-    ],
-    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
+    allow_origins=[o.strip() for o in allowed_origins if o.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    max_age=3600,
 )
+
+
+# Global exception handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTP exceptions with consistent error format."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "error_type": "http_error"},
+    )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Handle unexpected exceptions - log and return generic error."""
+    import traceback
+    # Log the full traceback for debugging
+    print(f"Unhandled exception in {request.method} {request.url.path}:")
+    traceback.print_exc()
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "error_type": "server_error",
+            "message": "An unexpected error occurred. Please try again later."
+        },
+    )
 
 
 @app.get("/health")
@@ -1101,13 +1262,16 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/api/v1/analyze", response_model=AnalyzeResponse)
-async def analyze_get(target: str = Query(min_length=3, max_length=2048)) -> AnalyzeResponse:
-    return await run_analysis(target)
+async def analyze_get(
+    target: str = Query(min_length=3, max_length=2048),
+    deep_scan: bool = Query(default=False),
+) -> AnalyzeResponse:
+    return await run_analysis(target, deep_scan=deep_scan)
 
 
 @app.post("/api/v1/analyze", response_model=AnalyzeResponse)
 async def analyze_post(request: AnalyzeRequest = Body(...)) -> AnalyzeResponse:
-    return await run_analysis(request.url)
+    return await run_analysis(request.url, deep_scan=request.deep_scan)
 
 @app.post("/api/v1/ai-analysis")
 async def ai_analysis(payload: dict):
@@ -1794,28 +1958,40 @@ def clean_domain(raw_target: str) -> str:
     return target
 
 
-async def run_analysis(raw_target: str) -> AnalyzeResponse:
+async def run_analysis(raw_target: str, deep_scan: bool = False) -> AnalyzeResponse:
     domain = clean_domain(raw_target)
     if not DOMAIN_RE.match(domain):
         raise HTTPException(status_code=400, detail="Invalid public domain format.")
 
-    dns_a = await run_command("dig", ["dig", domain, "A", "+short"])
-    primary_ip = first_ipv4(dns_a.stdout) or await socket_fallback_ip(domain)
+    if deep_scan:
+        dns_a = await run_command("dig", ["dig", domain, "A", "+short"])
+        primary_ip = first_ipv4(dns_a.stdout) or await socket_fallback_ip(domain)
+    else:
+        dns_a = await skipped_command("dig", ["dig", domain, "A", "+short"], "Deep scan disabled; DNS A lookup skipped.")
+        primary_ip = None
 
-    dns_mx_task = run_command("mx", ["dig", domain, "MX", "+short"])
-    domain_whois_task = run_command("domain_whois", ["whois", domain])
-    ssl_task = run_openssl_probe(domain, primary_ip is not None)
-    # HTTP header retrieval: use stealth-enhanced Python _do_curl with full
-    # browser headers (rotating User-Agent, Accept, Accept-Language, DNT, etc.)
-    # so CDN edge servers serve complete security headers.
-    # Falls back to curl CLI if the Python method fails.
-    curl_task = _run_stealth_curl(domain)
-    nc_task = run_command(
-        "nc",
-        ["nc", "-zv", "-w", "2", domain, *[str(port) for port in COMMON_PORTS]],
-        merge_stderr=True,
-    )
-    ping_task = run_command("ping", platform_ping_command(domain), timeout=3, merge_stderr=True)
+    if deep_scan:
+        dns_mx_task = run_command("mx", ["dig", domain, "MX", "+short"])
+        domain_whois_task = run_command("domain_whois", ["whois", domain])
+        ssl_task = run_openssl_probe(domain, primary_ip is not None)
+        # HTTP header retrieval: use stealth-enhanced Python _do_curl with full
+        # browser headers (rotating User-Agent, Accept, Accept-Language, DNT, etc.)
+        # so CDN edge servers serve complete security headers.
+        # Falls back to curl CLI if the Python method fails.
+        curl_task = _run_stealth_curl(domain)
+        nc_task = run_command(
+            "nc",
+            ["nc", "-zv", "-w", "2", domain, *[str(port) for port in COMMON_PORTS]],
+            merge_stderr=True,
+        )
+        ping_task = run_command("ping", platform_ping_command(domain), timeout=2, merge_stderr=True)
+    else:
+        dns_mx_task = skipped_command("mx", ["dig", domain, "MX", "+short"], "Deep scan disabled; MX lookup skipped.")
+        domain_whois_task = skipped_command("domain_whois", ["whois", domain], "Deep scan disabled; WHOIS lookup skipped.")
+        ssl_task = skipped_command("ssl", ["python", "fallback_ssl_probe", domain], "Deep scan disabled; SSL probe skipped.")
+        curl_task = skipped_command("curl", ["python", "fallback_curl", domain], "Deep scan disabled; HTTP header probe skipped.")
+        nc_task = skipped_command("nc", ["nc", "-zv", "-w", "2", domain, "<ports>"], "Deep scan disabled; port scan skipped.")
+        ping_task = skipped_command("ping", platform_ping_command(domain), "Deep scan disabled; ping skipped.")
 
     # Also store the original domain as a hint for IP fallback
     # The fallback_ip_whois can use domain_hint for CDN/PTR inference
@@ -1868,7 +2044,7 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
         "registrar": parsed_domain.registrar or "N/A",
     }
     website_result = {}
-    if inspect_website:
+    if deep_scan and inspect_website:
         try:
             website_result = await asyncio.to_thread(inspect_website, f"https://{domain}", 2.5)
         except Exception as exc:
@@ -1899,6 +2075,26 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
         ssl_unavailable=ssl_unavailable,
         headers_unavailable=headers_unavailable,
     )
+    if not deep_scan:
+        skipped_network_markers = (
+            "No MX records found",
+            "Domain did not resolve to IPv4",
+            "ICMP ping blocked",
+            "SSL/TLS data unavailable",
+            "HTTP probe failed",
+            "ASN was unavailable",
+            "Country/region was unavailable",
+            "Registrar was unavailable",
+            "Domain creation date unavailable",
+        )
+        before_count = len(findings)
+        findings = [
+            finding for finding in findings
+            if not any(marker in finding for marker in skipped_network_markers)
+        ]
+        if len(findings) != before_count:
+            add_finding(findings, "INFO: Fast scan mode skipped live DNS, WHOIS, SSL, HTTP, ping, and port probes. Enable Deep scan for live evidence.")
+        heuristic_score = max(0, heuristic_score - 12)
     commands = {result.name: result for result in [dns_a, dns_mx, ip_whois, domain_whois, ssl_result, curl_result, nc_result, ping_result]}
     raw_context = build_context(domain, primary_ip, parsed_meta, header_map, open_ports, dns_data, findings, commands, website_result)
 
@@ -1906,14 +2102,14 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
     # Tool/collection failures must be classified as INFO, never as risk findings
     # Only the failure reason is displayed; no risk points are added.
     for _cmd_name, _cmd in [("SSL", ssl_result), ("HTTP", curl_result), ("WHOIS", domain_whois)]:
-        if _cmd.status != "ok":
+        if deep_scan and _cmd.status != "ok":
             _reason = _cmd.error or _cmd.stderr or _cmd.status
             _line = f"INFO: {_cmd_name} data unavailable — {_reason}"
             if _line not in findings:
                 findings.append(_line)
     
     # Compute header score (fast, synchronous)
-    header_score, header_findings = score_security_headers(header_details)
+    header_score, header_findings = score_security_headers(header_details) if deep_scan else (0, [])
     for finding in header_findings:
         add_finding(findings, finding)
     
@@ -1935,7 +2131,7 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
 
     # v3.0: Start threat intelligence feed checks (runs in parallel)
     _threat_feed_task = None
-    if THREAT_INTEL_AVAILABLE:
+    if deep_scan and THREAT_INTEL_AVAILABLE:
         try:
             _threat_feed_task = asyncio.create_task(
                 asyncio.to_thread(
@@ -1966,7 +2162,7 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
         if homoglyph_count_val == 0:
             homoglyph_count_val = 2  # reasonable default when homoglyph is detected
     has_combo = "COMBO-SQUATTING" in findings_text or "BRAND + PHISHING" in findings_text or "BRAND+KEYWORD" in findings_text
-    has_suspicious_tld = any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS)
+    has_suspicious_tld = any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS_DOT)
     is_ip_like_flag = bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", domain))
     has_privacy = "PRIVACY" in findings_text or "REDACTED" in findings_text or "WHOIS PRIVACY" in findings_text
     has_suspicious_reg = "SUSPICIOUS REGISTRAR" in findings_text
@@ -2106,28 +2302,29 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
         _v2_coros.append(coro)
 
     # Section 1: SSL/TLS (I/O bound)
-    if utils_analyze_ssl_signals is not None:
+    if deep_scan and utils_analyze_ssl_signals is not None:
         _add_v2_task("ssl", asyncio.to_thread(utils_analyze_ssl_signals, domain, 2.0))
 
     # Section 6: Redirect Chain (I/O bound)
-    if utils_analyze_redirect_chain is not None:
+    if deep_scan and utils_analyze_redirect_chain is not None:
         _add_v2_task("redirect", asyncio.to_thread(utils_analyze_redirect_chain, f"https://{domain}", 5, 3.0))
 
     # Section 7: Certificate Transparency logs (I/O bound)
-    if utils_analyze_certificate_transparency is not None:
+    if deep_scan and utils_analyze_certificate_transparency is not None:
         _add_v2_task("ct", asyncio.to_thread(utils_analyze_certificate_transparency, domain, 3.0))
 
     # Section 8: DNS Records (I/O bound)
-    if utils_analyze_dns_records is not None:
+    if deep_scan and utils_analyze_dns_records is not None:
         _add_v2_task("dns", asyncio.to_thread(utils_analyze_dns_records, domain, 2.0))
 
     # Section 10: Owner Images (I/O bound)
     _whois_text = raw_logs.get("domain_whois", "")
     _website_text = (website_result.get("text_sample", "") or "") if isinstance(website_result, dict) else ""
-    _add_v2_task("owner", asyncio.to_thread(analyze_owner_images, domain, _whois_text, _website_text, 2.0))
+    if deep_scan:
+        _add_v2_task("owner", asyncio.to_thread(analyze_owner_images, domain, _whois_text, _website_text, 2.0))
 
     # Section 11: Browser automation (I/O bound, only if available)
-    if BROWSER_AUTO_AVAILABLE and analyze_dynamic_content is not None:
+    if deep_scan and BROWSER_AUTO_AVAILABLE and analyze_dynamic_content is not None:
         _add_v2_task("browser", asyncio.to_thread(
             analyze_dynamic_content,
             url=f"https://{domain}",
@@ -2153,6 +2350,7 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
     has_ssl_untrusted_root = False
     has_ssl_weak_protocol = False
     has_ssl_weak_cipher = False
+    has_dnssec = False
     ssl_v2_result = _v2_results.get("ssl", {}) or {}
     if isinstance(ssl_v2_result, dict) and ssl_v2_result:
         try:
@@ -2473,7 +2671,7 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
 
     # Await the AI analysis task that was launched in parallel with v2.0 engines
     try:
-        ai_report, ai_score = await asyncio.wait_for(ai_task, timeout=12.0)
+        ai_report, ai_score = await asyncio.wait_for(ai_task, timeout=8.0)
     except asyncio.TimeoutError:
         ai_report = "⚠ AI Analysis timed out after 12s"
         ai_score = None
@@ -2489,7 +2687,7 @@ async def run_analysis(raw_target: str) -> AnalyzeResponse:
     threat_feed_findings_count = 0
     if _threat_feed_task is not None:
         try:
-            threat_intel_result = await asyncio.wait_for(_threat_feed_task, timeout=15.0)
+            threat_intel_result = await asyncio.wait_for(_threat_feed_task, timeout=10.0)
         except asyncio.TimeoutError:
             threat_intel_result = {"timed_out": True, "summary": "Threat intelligence feeds timed out after 15s."}
         except Exception:
@@ -3020,7 +3218,7 @@ def analyze_threat_intel(
         add_finding(findings, f"HIGH RISK: Potential typosquatting / impersonation detected. {typo}")
         score += 30
 
-    if any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS):
+    if any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS_DOT):
         add_finding(findings, "SUSPICIOUS: TLD historically associated with elevated phishing abuse.")
         score += 8
 
@@ -3382,5 +3580,204 @@ async def socket_fallback_ip(domain: str) -> str | None:
 
 def clamp_score(score: int) -> int:
     return max(0, min(100, int(score)))
+
+
+# =============================================================================
+# v4.0 NEW API ENDPOINTS
+# =============================================================================
+
+# --- Email / SMS Phishing Analysis ---
+if EMAIL_PHISHING_AVAILABLE:
+    @app.post("/api/v1/analyze-email")
+    async def analyze_email_endpoint(payload: dict = Body(...)) -> dict:
+        """Analyze email content for phishing indicators."""
+        subject = payload.get("subject", "")
+        body = payload.get("body", "")
+        sender = payload.get("sender", "")
+        raw_headers = payload.get("raw_headers", "")
+        if not subject and not body:
+            raise HTTPException(status_code=400, detail="Subject or body is required")
+        result = analyze_email_phishing(subject=subject, body=body, sender=sender, raw_headers=raw_headers)
+        return {
+            "available": True,
+            "overall_score": result.overall_score,
+            "risk_level": result.risk_level,
+            "content_phishing": result.content_result.is_phishing,
+            "confidence": result.content_result.confidence,
+            "model_used": result.content_result.model_used,
+            "attack_type": result.content_result.attack_type,
+            "brands_impersonated": result.content_result.brands_impersonated,
+            "credential_harvesting": result.content_result.credential_harvesting,
+            "financial_phishing": result.content_result.financial_phishing,
+            "suspicious_urls": result.content_result.suspicious_urls,
+            "header_anomalies": result.header_result.anomalies,
+            "spf_result": result.header_result.spf_result,
+            "dkim_result": result.header_result.dkim_result,
+            "dmarc_result": result.header_result.dmarc_result,
+            "findings": result.content_result.findings + result.header_result.anomalies,
+            "summary": result.summary,
+        }
+
+    @app.post("/api/v1/analyze-sms")
+    async def analyze_sms_endpoint(payload: dict = Body(...)) -> dict:
+        """Analyze SMS content for phishing indicators."""
+        message = payload.get("message", "")
+        sender = payload.get("sender", "")
+        if not message:
+            raise HTTPException(status_code=400, detail="Message is required")
+        result = analyze_sms_phishing(message=message, sender=sender)
+        return {
+            "available": True,
+            "is_phishing": result.is_phishing,
+            "score": result.score,
+            "confidence": result.confidence,
+            "model_used": result.model_used,
+            "attack_type": result.attack_type,
+            "brands_impersonated": result.brands_impersonated,
+            "suspicious_urls": result.suspicious_urls,
+            "findings": result.findings,
+        }
+
+# --- Graph-Based Domain Analysis ---
+if GRAPH_ANALYSIS_AVAILABLE:
+    @app.post("/api/v1/graph-analysis")
+    async def graph_analysis_endpoint(payload: dict = Body(...)) -> dict:
+        """Perform graph-based domain relationship analysis."""
+        domain = payload.get("domain", "")
+        dns_data = payload.get("dns_data", {})
+        whois_data = payload.get("whois_data", {})
+        ssl_data = payload.get("ssl_data", {})
+        ct_subdomains = payload.get("ct_subdomains", [])
+        if not domain:
+            raise HTTPException(status_code=400, detail="Domain is required")
+        result = analyze_domain_graph(
+            target_domain=domain,
+            dns_data=dns_data,
+            whois_data=whois_data,
+            ssl_data=ssl_data,
+            ct_subdomains=ct_subdomains,
+        )
+        return result
+
+# --- Adversarial Detection ---
+if ADVERSARIAL_DETECTION_AVAILABLE:
+    @app.post("/api/v1/adversarial-scan")
+    async def adversarial_scan_endpoint(payload: dict = Body(...)) -> dict:
+        """Scan content for adversarial/AI-generated phishing indicators."""
+        content = payload.get("content", "")
+        context = payload.get("context", "")
+        if not content:
+            raise HTTPException(status_code=400, detail="Content is required")
+        result = detect_adversarial_content(text=content, context=context)
+        return result
+
+# --- Continuous Learning ---
+if CONTINUOUS_LEARNING_AVAILABLE:
+    @app.get("/api/v1/learning-status")
+    async def learning_status_endpoint() -> dict:
+        """Get continuous learning pipeline status."""
+        return get_pipeline_status()
+
+    @app.post("/api/v1/submit-feedback")
+    async def submit_feedback_endpoint(payload: dict = Body(...)) -> dict:
+        """Submit user feedback on scan results."""
+        domain = payload.get("domain", "")
+        user_verdict = payload.get("verdict", "")
+        scan_score = payload.get("scan_score", 50)
+        notes = payload.get("notes", "")
+        features = payload.get("features", {})
+        if not domain or not user_verdict:
+            raise HTTPException(status_code=400, detail="Domain and verdict are required")
+        return submit_feedback_and_check_retrain(
+            domain=domain, user_verdict=user_verdict,
+            scan_score=scan_score, notes=notes, features=features,
+        )
+
+    @app.post("/api/v1/trigger-retrain")
+    async def trigger_retrain_endpoint() -> dict:
+        """Manually trigger model retraining."""
+        return train_model(force=True)
+
+    @app.get("/api/v1/drift-check")
+    async def drift_check_endpoint() -> dict:
+        """Check for model drift."""
+        return detect_drift()
+
+# --- MISP & OTX Threat Intel ---
+if MISP_OTX_AVAILABLE:
+    @app.post("/api/v1/threat-intel")
+    async def threat_intel_endpoint(payload: dict = Body(...)) -> dict:
+        """Query MISP, AlienVault OTX, and URLHaus for domain intelligence."""
+        domain = payload.get("domain", "")
+        ip = payload.get("ip", "")
+        if not domain:
+            raise HTTPException(status_code=400, detail="Domain is required")
+        result = query_all_threat_intel(domain=domain, ip=ip)
+        return result
+
+# --- Sandbox Analysis ---
+if SANDBOX_ANALYSIS_AVAILABLE:
+    @app.post("/api/v1/sandbox")
+    async def sandbox_endpoint(payload: dict = Body(...)) -> dict:
+        """Perform sandbox behavioral analysis on a URL."""
+        url = payload.get("url", "")
+        if not url:
+            raise HTTPException(status_code=400, detail="URL is required")
+        result = analyze_url_behavior(url=url)
+        return result
+
+# --- DOM/Visual Analysis ---
+if DOM_VISUAL_AVAILABLE:
+    @app.post("/api/v1/dom-analysis")
+    async def dom_analysis_endpoint(payload: dict = Body(...)) -> dict:
+        """Analyze webpage DOM structure for phishing indicators."""
+        html = payload.get("html", "")
+        url = payload.get("url", "")
+        if not html:
+            raise HTTPException(status_code=400, detail="HTML content is required")
+        result = analyze_dom_structure(html=html, url=url)
+        return result
+
+    @app.post("/api/v1/visual-compare")
+    async def visual_compare_endpoint(payload: dict = Body(...)) -> dict:
+        """Compare two screenshots for visual similarity."""
+        import base64
+        img1_b64 = payload.get("image1", "")
+        img2_b64 = payload.get("image2", "")
+        if not img1_b64 or not img2_b64:
+            raise HTTPException(status_code=400, detail="Both images are required")
+        try:
+            img1_bytes = base64.b64decode(img1_b64)
+            img2_bytes = base64.b64decode(img2_b64)
+            return compare_visual_similarity(img1_bytes, img2_bytes)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image data: {e}")
+
+# --- v4.0 Feature Status ---
+@app.get("/api/v1/features")
+async def features_status_endpoint() -> dict:
+    """Get status of all v4.0 features."""
+    return {
+        "v4_features": {
+            "email_phishing": EMAIL_PHISHING_AVAILABLE,
+            "sms_phishing": EMAIL_PHISHING_AVAILABLE,
+            "graph_analysis": GRAPH_ANALYSIS_AVAILABLE,
+            "adversarial_detection": ADVERSARIAL_DETECTION_AVAILABLE,
+            "continuous_learning": CONTINUOUS_LEARNING_AVAILABLE,
+            "misp_otx": MISP_OTX_AVAILABLE,
+            "sandbox_analysis": SANDBOX_ANALYSIS_AVAILABLE,
+            "dom_visual_analysis": DOM_VISUAL_AVAILABLE,
+        },
+        "v3_features": {
+            "threat_intel_feeds": THREAT_INTEL_AVAILABLE,
+            "ensemble_ml": ENSEMBLE_ML_AVAILABLE,
+            "fast_flux_dga": FAST_FLUX_DGA_AVAILABLE,
+            "reputation_timeline": REPUTATION_TIMELINE_AVAILABLE,
+        },
+        "v2_features": {
+            "browser_automation": BROWSER_AUTO_AVAILABLE,
+            "brand_impersonation": BRAND_IMPERSONATION_AVAILABLE,
+        },
+    }
 
 

@@ -41,6 +41,15 @@ from typing import Any
 import re
 import numpy as np
 
+# Import unified TLD lists from utils
+try:
+    from utils import SUSPICIOUS_TLDS, SUSPICIOUS_TLDS_DOT
+except ImportError:
+    SUSPICIOUS_TLDS = frozenset({"xyz", "top", "club", "online", "site", "web", "info", "biz",
+        "tk", "ml", "ga", "cf", "gq", "pw", "ws", "icu", "click",
+        "cam", "mom", "work", "vip", "support", "email", "live", "loan"})
+    SUSPICIOUS_TLDS_DOT = frozenset("." + tld for tld in SUSPICIOUS_TLDS)
+
 warnings.filterwarnings("ignore")
 
 # Fix for Windows cp1252 console encoding
@@ -140,11 +149,6 @@ MAJOR_BRANDS = [
     "tata", "reliance", "airtel", "jio", "icici",
     "sbi", "hdfc", "axisbank", "kotak",
 ]
-
-SUSPICIOUS_TLDS = {".top", ".xyz", ".click", ".work", ".live", ".loan", ".cc", ".tk", ".gq", ".ml",
-                    ".zip", ".review", ".country", ".download", ".xin", ".party", ".date", ".racing",
-                    ".win", ".bid", ".trade", ".webcam", ".science"}
-
 ALL_TLDS = [".com", ".org", ".net", ".io", ".co", ".app", ".dev", ".ai",
             ".gov", ".edu", ".mil", ".info", ".biz", ".me", ".tv",
             ".online", ".site", ".club", ".live", ".work", ".support",
@@ -201,7 +205,7 @@ def _generate_domain_name(is_phishing: bool) -> str:
         
         # Pick a suspicious TLD often
         if random.random() < 0.6:
-            tld = random.choice(list(SUSPICIOUS_TLDS))
+            tld = random.choice(list(SUSPICIOUS_TLDS_DOT))
         else:
             tld = random.choice(ALL_TLDS)
     else:
@@ -274,7 +278,7 @@ def _compute_feature_vector(domain: str, is_phishing: bool) -> list[float]:
     f[5] = consonant_count / max(sum(c.isalpha() for c in label), 1)
     
     # 6: Suspicious TLD
-    f[6] = 1.0 if tld in SUSPICIOUS_TLDS else 0.0
+    f[6] = 1.0 if tld in SUSPICIOUS_TLDS_DOT else 0.0
     
     # 7: Has brand keywords
     f[7] = 1.0 if any(brand in label for brand in MAJOR_BRANDS) else 0.0

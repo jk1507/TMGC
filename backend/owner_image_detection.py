@@ -191,7 +191,7 @@ def analyze_owner_images(
     domain: str,
     whois_text: str = "",
     website_text: str = "",
-    timeout: float = 2.0,
+    timeout: float = 1.5,
 ) -> dict[str, Any]:
     """
     Analyze owner images and entity attribution for a domain.

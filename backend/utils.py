@@ -22,11 +22,14 @@ import difflib
 import ipaddress
 import json
 import math
+import random
 import re
 import socket
 import ssl as ssl_module
+import time
 import unicodedata
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+import asyncio
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -40,6 +43,169 @@ try:
     import whois as _whois_lib  # type: ignore
 except Exception:
     _whois_lib = None  # type: ignore
+
+
+# ==============================================================================
+# RETRY LOGIC & CIRCUIT BREAKER FOR EXTERNAL APIs
+# ==============================================================================
+
+T = TypeVar('T')
+
+@dataclass
+class CircuitBreakerState:
+    """Track circuit breaker state for an external service."""
+    failures: int = 0
+    last_failure: float = 0
+    state: str = "closed"  # closed, open, half-open
+    success_count: int = 0
+
+
+_CIRCUIT_BREAKERS: Dict[str, CircuitBreakerState] = {}
+
+CIRCUIT_BREAKER_THRESHOLD = 5  # failures before opening
+CIRCUIT_BREAKER_TIMEOUT = 60   # seconds before half-open
+CIRCUIT_BREAKER_SUCCESS_THRESHOLD = 2  # successes in half-open to close
+
+
+def _get_circuit_breaker(service_name: str) -> CircuitBreakerState:
+    """Get or create circuit breaker for a service."""
+    if service_name not in _CIRCUIT_BREAKERS:
+        _CIRCUIT_BREAKERS[service_name] = CircuitBreakerState()
+    return _CIRCUIT_BREAKERS[service_name]
+
+
+def _check_circuit_breaker(service_name: str) -> bool:
+    """Check if circuit breaker allows requests. Returns True if allowed."""
+    cb = _get_circuit_breaker(service_name)
+    now = time.time()
+    
+    if cb.state == "open":
+        if now - cb.last_failure > CIRCUIT_BREAKER_TIMEOUT:
+            cb.state = "half-open"
+            cb.success_count = 0
+            return True
+        return False
+    return True
+
+
+def _record_success(service_name: str) -> None:
+    """Record successful call."""
+    cb = _get_circuit_breaker(service_name)
+    cb.failures = 0
+    if cb.state == "half-open":
+        cb.success_count += 1
+        if cb.success_count >= CIRCUIT_BREAKER_SUCCESS_THRESHOLD:
+            cb.state = "closed"
+
+
+def _record_failure(service_name: str) -> None:
+    """Record failed call."""
+    cb = _get_circuit_breaker(service_name)
+    cb.failures += 1
+    cb.last_failure = time.time()
+    if cb.failures >= CIRCUIT_BREAKER_THRESHOLD:
+        cb.state = "open"
+
+
+async def with_retry(
+    func: Callable[..., T],
+    *args,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 10.0,
+    exponential_base: float = 2.0,
+    jitter: bool = True,
+    service_name: str = "unknown",
+    **kwargs,
+) -> T:
+    """
+    Execute a function with retry logic and circuit breaker.
+    
+    Args:
+        func: Async function to execute
+        *args: Positional arguments for func
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+        exponential_base: Base for exponential backoff
+        jitter: Add random jitter to delay
+        service_name: Name for circuit breaker tracking
+        **kwargs: Keyword arguments for func
+    
+    Returns:
+        Result of func
+    
+    Raises:
+        Last exception if all retries exhausted
+    """
+    # Check circuit breaker
+    if not _check_circuit_breaker(service_name):
+        raise Exception(f"Circuit breaker open for {service_name}")
+    
+    last_exception = None
+    delay = base_delay
+    
+    for attempt in range(max_retries + 1):
+        try:
+            result = await func(*args, **kwargs)
+            _record_success(service_name)
+            return result
+        except Exception as e:
+            last_exception = e
+            _record_failure(service_name)
+            
+            if attempt < max_retries:
+                # Calculate delay with exponential backoff and optional jitter
+                actual_delay = min(delay, max_delay)
+                if jitter:
+                    actual_delay *= (0.5 + random.random())  # 0.5x to 1.5x
+                await asyncio.sleep(actual_delay)
+                delay *= exponential_base
+            else:
+                break
+    
+    raise last_exception
+
+
+def with_retry_sync(
+    func: Callable[..., T],
+    *args,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 10.0,
+    exponential_base: float = 2.0,
+    jitter: bool = True,
+    service_name: str = "unknown",
+    **kwargs,
+) -> T:
+    """
+    Synchronous version of with_retry for non-async functions.
+    """
+    if not _check_circuit_breaker(service_name):
+        raise Exception(f"Circuit breaker open for {service_name}")
+    
+    last_exception = None
+    delay = base_delay
+    
+    for attempt in range(max_retries + 1):
+        try:
+            result = func(*args, **kwargs)
+            _record_success(service_name)
+            return result
+        except Exception as e:
+            last_exception = e
+            _record_failure(service_name)
+            
+            if attempt < max_retries:
+                actual_delay = min(delay, max_delay)
+                if jitter:
+                    actual_delay *= (0.5 + random.random())
+                time.sleep(actual_delay)
+                delay *= exponential_base
+            else:
+                break
+    
+    raise last_exception
 
 
 __all__ = [
@@ -394,8 +560,17 @@ class DomainConfig:
 
 CONFIG = DomainConfig()
 
+# Unified TLD lists (without dot prefix) - single source of truth
 DARK_WEB_TLDS = frozenset({"onion", "i2p", "bit", "b32", "loki"})
 HIGH_RISK_TLDS = frozenset({"xyz", "top", "tk", "ml", "ga", "cf", "gq", "pw", "ws"})
+
+# Suspicious TLDs from DomainConfig (without dot prefix)
+SUSPICIOUS_TLDS = CONFIG.suspicious_tlds
+
+# Dot-prefixed versions for convenience (used by main.py and scoring)
+SUSPICIOUS_TLDS_DOT = frozenset("." + tld for tld in SUSPICIOUS_TLDS)
+HIGH_RISK_TLDS_DOT = frozenset("." + tld for tld in HIGH_RISK_TLDS)
+DARK_WEB_TLDS_DOT = frozenset("." + tld for tld in DARK_WEB_TLDS)
 
 
 def _safe_lower(value: object) -> str:
@@ -580,7 +755,7 @@ def _html_to_text_sample(html: str, limit: int = 5000) -> str:
     return s[:limit]
 
 
-def inspect_website(url: str, timeout: float = 4.0, max_bytes: int = 512_000) -> Dict[str, Any]:
+def inspect_website(url: str, timeout: float = 2.5, max_bytes: int = 512_000) -> Dict[str, Any]:
     """Fetches a website (no JS execution) and extracts lightweight HTML signals."""
     ok, err = validate_url(url)
     if not ok:
@@ -725,23 +900,37 @@ def analyze_urlhaus(domain: str, url: str = "") -> Dict[str, Any]:
     """URLhaus (abuse.ch) — no API key required."""
     d = sanitize_domain(domain)
     out: Dict[str, Any] = {"provider": "URLhaus", "available": True, "flagged": False, "source": "live", "matches": []}
-    try:
+    
+    async def _fetch_urlhaus() -> Dict[str, Any]:
+        result = out.copy()
         if url:
             u = sanitize_url(url)
-            j = _form_post("https://urlhaus-api.abuse.ch/v1/url/", {"url": u})
+            j = await with_retry(_form_post, "https://urlhaus-api.abuse.ch/v1/url/", {"url": u}, 
+                                service_name="urlhaus", max_retries=2)
             st = j.get("query_status")
             if st == "ok":
-                out["flagged"] = True
-                out["matches"].append({"type": "url", "status": j.get("url_status"), "threat": j.get("threat"), "tags": j.get("tags")})
-            out["url_status"] = st
+                result["flagged"] = True
+                result["matches"].append({"type": "url", "status": j.get("url_status"), "threat": j.get("threat"), "tags": j.get("tags")})
+            result["url_status"] = st
         if d:
-            j2 = _form_post("https://urlhaus-api.abuse.ch/v1/host/", {"host": d})
+            j2 = await with_retry(_form_post, "https://urlhaus-api.abuse.ch/v1/host/", {"host": d},
+                                 service_name="urlhaus", max_retries=2)
             st2 = j2.get("query_status")
             if st2 == "ok":
-                out["flagged"] = True
-                out["matches"].append({"type": "host", "payloads": j2.get("payloads", [])[:3]})
-            out["host_status"] = st2
-        return out
+                result["flagged"] = True
+                result["matches"].append({"type": "host", "payloads": j2.get("payloads", [])[:3]})
+            result["host_status"] = st2
+        return result
+    
+    try:
+        # Run async function in sync context
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(_fetch_urlhaus())
     except Exception as exc:
         return {"provider": "URLhaus", "available": False, "flagged": False, "source": "error", "error": str(exc)}
 
@@ -1442,7 +1631,7 @@ def detect_url_path_signals(url: str) -> Dict[str, Any]:
 # ==============================================================================
 
 
-def analyze_redirect_chain(url: str, max_redirects: int = 5, timeout: float = 4.0) -> Dict[str, Any]:
+def analyze_redirect_chain(url: str, max_redirects: int = 5, timeout: float = 2.0) -> Dict[str, Any]:
     """
     Safely follow redirects and analyze the redirect chain.
 
@@ -1647,7 +1836,7 @@ def analyze_dns_signals(domain: str) -> Dict[str, Any]:
 # ==============================================================================
 
 
-def analyze_ssl_signals(domain: str, timeout: float = 3.0) -> Dict[str, Any]:
+def analyze_ssl_signals(domain: str, timeout: float = 2.0) -> Dict[str, Any]:
     """
     Enhanced SSL/TLS analysis with full certificate validation and error classification.
 
@@ -1871,7 +2060,7 @@ def _populate_cert_info(cert: Dict[str, Any], result: Dict[str, Any]) -> None:
 # ==============================================================================
 
 
-def analyze_certificate_transparency(domain: str, timeout: float = 5.0) -> Dict[str, Any]:
+def analyze_certificate_transparency(domain: str, timeout: float = 3.0) -> Dict[str, Any]:
     """
     Query Certificate Transparency logs via crt.sh for domain certificate intelligence.
 
@@ -2087,7 +2276,7 @@ def analyze_certificate_transparency(domain: str, timeout: float = 5.0) -> Dict[
 # ==============================================================================
 
 
-def analyze_dns_records(domain: str, timeout: float = 3.0) -> Dict[str, Any]:
+def analyze_dns_records(domain: str, timeout: float = 2.0) -> Dict[str, Any]:
     """
     Comprehensive DNS record analysis with full record type enumeration.
 

@@ -1,29 +1,93 @@
-# Node.js
+# ============================================
+# RETRO_INTEL / TMGC - Gitignore
+# ============================================
+
+# Node.js / Frontend
 node_modules/
 dist/
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.vite/
 
-# Python
+# Python / Backend
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .venv/
 venv/
-
-# VS Code
-.vscode/
-
-# Database
-*.db
-*.sqlite3
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
+env/
 .env
 backend/.env
+
+# Generated Models (re-train with train_*.py)
+*.pkl
+*.joblib
+*.h5
+*.onnx
+model/
+models/
+
+# Database Files
+*.db
+*.sqlite
+*.sqlite3
+
+# Log Files
+*.log
+logs/
+
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# IDE / Editor
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Build Artifacts
+artifacts/
+build/
+.cache/
+
+# Temp Files
+*.tmp
+*.temp
+probe.tmp
+probe2.tmp
+
+# Generated Reports / Data
+training_report.json
+reputation_timeline.json
+brand_database.json
+scanner.db
+
+# Test Artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+
+# Archive / ZIP Files
+*.zip
+
+# Image Files (not part of codebase)
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+
+# Binary Files
+*.exe
+*.dll
+*.so
+*.dylib

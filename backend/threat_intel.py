@@ -25,7 +25,7 @@ import urllib.request
 from typing import Any
 
 
-def _form_post(url: str, form: dict[str, str], headers: dict[str, str] | None = None, timeout: float = 6.0) -> dict[str, Any]:
+def _form_post(url: str, form: dict[str, str], headers: dict[str, str] | None = None, timeout: float = 4.0) -> dict[str, Any]:
     """Make a form-encoded POST request and return parsed JSON."""
     h = {"accept": "application/json"}
     if headers:
@@ -37,7 +37,7 @@ def _form_post(url: str, form: dict[str, str], headers: dict[str, str] | None = 
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _json_post(url: str, payload: dict[str, Any], headers: dict[str, str] | None = None, timeout: float = 6.0) -> dict[str, Any]:
+def _json_post(url: str, payload: dict[str, Any], headers: dict[str, str] | None = None, timeout: float = 4.0) -> dict[str, Any]:
     """Make a JSON POST request and return parsed JSON."""
     h = {"accept": "application/json"}
     if headers:

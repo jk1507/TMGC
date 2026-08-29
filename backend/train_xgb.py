@@ -387,13 +387,16 @@ def feature_vector_for(domain: str, age_days: int, privacy: float = 0.0, suspici
     from utils import (
         detect_combosquatting,
         detect_homoglyphs,
-        detect_typosquatting,
-        extract_features,
-        normalize_homoglyphs,
-    )
-    import re
-    import numpy as np
-    from main import KNOWN_BRANDS, SUSPICIOUS_TLDS
+detect_typosquatting,
+    extract_features,
+    normalize_homoglyphs,
+    # Unified TLD lists
+    SUSPICIOUS_TLDS,
+    SUSPICIOUS_TLDS_DOT,
+)
+import re
+import numpy as np
+from main import KNOWN_BRANDS, clean_domain
 
     clean = clean_domain(domain)
     parts = clean.split(".")
@@ -454,7 +457,7 @@ def feature_vector_for(domain: str, age_days: int, privacy: float = 0.0, suspici
         min(features.get("subdomain_count", len(parts) - 2) / 5.0, 1.0),     # 3: subdomain depth
         min(features.get("entropy", 3.0) / 5.0, 1.0),                        # 4: shannon entropy
         consonant_ratio,                                                      # 5: consonant ratio
-        float(features.get("suspicious_tld", ("." + parts[-1]) in SUSPICIOUS_TLDS)),  # 6: suspicious TLD
+        float(features.get("suspicious_tld", ("." + parts[-1]) in SUSPICIOUS_TLDS_DOT)),  # 6: suspicious TLD
         float(features.get("has_suspicious_keywords", any(k in clean for k in KNOWN_BRANDS))),  # 7: brand keywords
         float(features.get("is_ip_like", False)),                             # 8: IP-like domain
         excessive_hyphens,                                                    # 9: excessive hyphens (>=3)

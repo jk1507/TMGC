@@ -2,10 +2,9 @@ import React, { useMemo, useRef, useState } from "react";
 import PremiumDashboard, { getTrustScore } from "./PremiumDashboard.jsx";
 import { RAW_TABS } from "./dashboardShared.jsx";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api/v1/analyze";
-const AI_ANALYSIS_API =
-  import.meta.env.VITE_AI_ANALYSIS_API ||
-  "http://127.0.0.1:8000/api/v1/ai-analysis";
+const isDev = import.meta.env.DEV;
+const API_URL = isDev ? "/api/v1/analyze" : (import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1/analyze");
+const AI_ANALYSIS_API = isDev ? "/api/v1/ai-analysis" : (import.meta.env.VITE_AI_ANALYSIS_API || "http://localhost:8000/api/v1/ai-analysis");
 const KEYWORDS = [
   "CRITICAL",
   "HIGH RISK",
@@ -56,7 +55,16 @@ const TMGC_VERSION = "v2.0.0 TMGC";
 
 function App() {
   const [target, setTarget] = useState("example.com");
-  const [user, setUser] = useState(() => JSON.parse(localStorage.getItem("tmgc_user") || "null"));
+  const [user, setUser] = useState(() => {
+    const session = localStorage.getItem("tmgc_session");
+    const userData = localStorage.getItem("tmgc_user");
+    if (session && userData) {
+      return JSON.parse(userData);
+    }
+    localStorage.removeItem("tmgc_user");
+    localStorage.removeItem("tmgc_session");
+    return null;
+  });
   const [logs, setLogs] = useState(["RETRO_INTEL SHELL READY.", "AWAITING TARGET INPUT..."]);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -67,21 +75,33 @@ function App() {
   const [loadingAI, setLoadingAI] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [deepScan, setDeepScan] = useState(false);
   const [scanMeta, setScanMeta] = useState({ startedAt: null, completedAt: null, durationMs: null });
   const exportRef = useRef(null);
 
   const data = useMemo(() => normalizeResult(result), [result]);
-  const highRisk = (data?.risk_score || 0) >= 46;
-  const verdict =
-  (data?.risk_score || 0) >= 71
-    ? "☠️ CRITICAL / PHISHING"
-    : (data?.risk_score || 0) >= 46
-    ? "🔴 HIGH RISK"
-    : (data?.risk_score || 0) >= 26
-    ? "🟠 SUSPICIOUS"
-    : (data?.risk_score || 0) >= 11
-    ? "🟡 LOW RISK"
-    : "✅ SAFE / TRUSTED";
+  const riskScore = data?.risk_score || 0;
+  const highRisk = riskScore >= 46;
+  
+  // Use backend classification if available, otherwise compute locally
+  const backendClassification = data?.score_components?.classification_v2;
+  const backendSeverity = data?.score_components?.classification_severity;
+  
+  const verdict = backendClassification
+    ? (backendSeverity === "critical" ? "☠️ CRITICAL / PHISHING"
+        : backendSeverity === "high" ? "🔴 HIGH RISK"
+        : backendSeverity === "suspicious" ? "🟠 SUSPICIOUS"
+        : backendSeverity === "low" ? "🟡 LOW RISK"
+        : "✅ SAFE VERIFIED")
+    : riskScore >= 71
+      ? "☠️ CRITICAL / PHISHING"
+      : riskScore >= 46
+      ? "🔴 HIGH RISK"
+      : riskScore >= 26
+      ? "🟠 SUSPICIOUS"
+      : riskScore >= 11
+      ? "🟡 LOW RISK"
+      : "✅ SAFE / TRUSTED";
   const accent = highRisk ? "border-red-500 text-red-400 shadow-[0_0_24px_rgba(239,68,68,0.45)]" : "border-green-500 text-green-400 shadow-[0_0_24px_rgba(34,197,94,0.35)]";
  const headerRows =
   data?.security_header_details ||
@@ -129,7 +149,7 @@ function App() {
       const response = await fetch(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: cleanTarget }),
+        body: JSON.stringify({ url: cleanTarget, deep_scan: deepScan }),
       });
 
       if (!response.ok) {
@@ -176,6 +196,12 @@ function App() {
     ">> EXECUTING CONTEXTUAL THREAT REASONING...",
   ]);
 
+  // Get raw_context from result if available, otherwise fetch from backend
+  let rawContext = data?.raw_context || "";
+  if (!rawContext && result) {
+    rawContext = result.raw_context || "";
+  }
+
   try {
     const response = await fetch(AI_ANALYSIS_API, {
       method: "POST",
@@ -183,9 +209,9 @@ function App() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-  url: cleanTarget,
-  raw_context: data?.raw_context || "",
-}),
+        url: cleanTarget,
+        raw_context: rawContext,
+      }),
     });
 
     if (!response.ok) {
@@ -254,8 +280,6 @@ throw new Error(
         ? "CRITICAL / PHISHING"
         : data.risk_score >= 60
         ? "HIGH RISK"
-        : data.risk_score >= 30
-        ? "SUSPICIOUS"
         : data.risk_score >= 30
         ? "SUSPICIOUS"
         : "SAFE / TRUSTED";
@@ -567,6 +591,8 @@ ${commands}
       shareReport={shareReport}
       scrollToSection={scrollToSection}
       setUser={setUser}
+      deepScan={deepScan}
+      setDeepScan={setDeepScan}
       NAV_ITEMS={NAV_ITEMS}
       TMGC_VERSION={TMGC_VERSION}
     />
@@ -583,7 +609,27 @@ function AuthScreen({ onAuthenticated }) {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
-  function submit(event) {
+  async function hashPassword(password, salt) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(password + salt);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function generateSalt() {
+    const array = new Uint8Array(16);
+    crypto.getRandomValues(array);
+    return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function generateSessionToken() {
+    const array = new Uint8Array(32);
+    crypto.getRandomValues(array);
+    return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function submit(event) {
     event.preventDefault();
     setError("");
     const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
@@ -593,8 +639,40 @@ function AuthScreen({ onAuthenticated }) {
       if (form.name.trim().length < 3) return setError("Name must be at least 3 characters.");
       if (form.password !== form.confirm) return setError("Passwords do not match.");
     }
-    const user = { name: form.name.trim() || "Analyst", email: form.email.trim().toLowerCase() };
+
+    const email = form.email.trim().toLowerCase();
+    const usersKey = "tmgc_users";
+    const users = JSON.parse(localStorage.getItem(usersKey) || "{}");
+
+    if (mode === "signup") {
+      if (users[email]) {
+        return setError("Account already exists. Please login.");
+      }
+      const salt = generateSalt();
+      const passwordHash = await hashPassword(form.password, salt);
+      users[email] = {
+        name: form.name.trim() || "Analyst",
+        email,
+        passwordHash,
+        salt,
+        createdAt: Date.now(),
+      };
+      localStorage.setItem(usersKey, JSON.stringify(users));
+    } else {
+      const userRecord = users[email];
+      if (!userRecord) {
+        return setError("Invalid email or password.");
+      }
+      const passwordHash = await hashPassword(form.password, userRecord.salt);
+      if (passwordHash !== userRecord.passwordHash) {
+        return setError("Invalid email or password.");
+      }
+    }
+
+    const sessionToken = generateSessionToken();
+    const user = { name: users[email].name, email };
     localStorage.setItem("tmgc_user", JSON.stringify(user));
+    localStorage.setItem("tmgc_session", sessionToken);
     onAuthenticated(user);
   }
 

@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RETRO_INTEL Phishing Detector</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 380px;
+      min-height: 480px;
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+    }
+    .header {
+      background: linear-gradient(135deg, #0f1f0f 0%, #1a0a2e 100%);
+      padding: 16px 20px;
+      border-bottom: 1px solid #1a3a1a;
+    }
+    .header h1 {
+      font-size: 18px;
+      font-weight: 700;
+      color: #00ff88;
+      letter-spacing: 1px;
+    }
+    .header .subtitle {
+      font-size: 11px;
+      color: #4a7a4a;
+      margin-top: 2px;
+      letter-spacing: 0.5px;
+    }
+    .scan-section {
+      padding: 16px 20px;
+    }
+    .url-input {
+      width: 100%;
+      padding: 10px 14px;
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      color: #00ff88;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .url-input:focus {
+      border-color: #00ff88;
+    }
+    .url-input::placeholder {
+      color: #3a5a3a;
+    }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      margin-top: 10px;
+      border: 1px solid #00ff88;
+      background: rgba(0, 255, 136, 0.1);
+      color: #00ff88;
+      font-weight: 600;
+      font-size: 13px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 1px;
+    }
+    .btn:hover {
+      background: rgba(0, 255, 136, 0.2);
+      box-shadow: 0 0 12px rgba(0, 255, 136, 0.2);
+    }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .result-section {
+      padding: 0 20px 20px;
+      display: none;
+    }
+    .result-section.visible { display: block; }
+    .score-display {
+      text-align: center;
+      padding: 16px;
+      border-radius: 12px;
+      margin-bottom: 12px;
+    }
+    .score-display.safe { background: rgba(0, 180, 80, 0.15); border: 1px solid rgba(0, 180, 80, 0.3); }
+    .score-display.low { background: rgba(200, 180, 0, 0.15); border: 1px solid rgba(200, 180, 0, 0.3); }
+    .score-display.medium { background: rgba(255, 140, 0, 0.15); border: 1px solid rgba(255, 140, 0, 0.3); }
+    .score-display.high { background: rgba(255, 60, 60, 0.15); border: 1px solid rgba(255, 60, 60, 0.3); }
+    .score-display.critical { background: rgba(200, 0, 0, 0.15); border: 1px solid rgba(200, 0, 0, 0.3); }
+    .score-value {
+      font-size: 36px;
+      font-weight: 800;
+      color: #00ff88;
+    }
+    .score-display.low .score-value { color: #c8b400; }
+    .score-display.medium .score-value { color: #ff8c00; }
+    .score-display.high .score-value { color: #ff3c3c; }
+    .score-display.critical .score-value { color: #ff0000; }
+    .score-label {
+      font-size: 12px;
+      color: #888;
+      margin-top: 4px;
+    }
+    .score-verdict {
+      font-size: 14px;
+      font-weight: 700;
+      margin-top: 8px;
+      letter-spacing: 1px;
+    }
+    .findings-list {
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .finding-item {
+      padding: 8px 12px;
+      margin-bottom: 6px;
+      background: #111;
+      border-radius: 6px;
+      font-size: 12px;
+      border-left: 3px solid #333;
+    }
+    .finding-item.critical { border-left-color: #ff0000; }
+    .finding-item.high { border-left-color: #ff3c3c; }
+    .finding-item.medium { border-left-color: #ff8c00; }
+    .finding-item.low { border-left-color: #c8b400; }
+    .finding-item.info { border-left-color: #00ff88; }
+    .section-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: #4a7a4a;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin: 12px 0 8px;
+    }
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 12px;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    .detail-label { color: #666; }
+    .detail-value { color: #ccc; font-weight: 500; }
+    .loading {
+      text-align: center;
+      padding: 30px;
+      color: #00ff88;
+      font-size: 13px;
+    }
+    .loading .spinner {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      border: 3px solid #1a3a1a;
+      border-top: 3px solid #00ff88;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 10px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .error-msg {
+      padding: 12px;
+      background: rgba(255, 0, 0, 0.1);
+      border: 1px solid rgba(255, 0, 0, 0.3);
+      border-radius: 8px;
+      color: #ff6666;
+      font-size: 12px;
+      text-align: center;
+    }
+    .footer {
+      padding: 12px 20px;
+      text-align: center;
+      font-size: 10px;
+      color: #333;
+      border-top: 1px solid #1a1a1a;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .badge.safe { background: rgba(0,180,80,0.2); color: #00b450; }
+    .badge.suspicious { background: rgba(255,140,0,0.2); color: #ff8c00; }
+    .badge.dangerous { background: rgba(255,0,0,0.2); color: #ff0000; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>RETRO_INTEL</h1>
+    <div class="subtitle">OSINT DOMAIN THREAT ANALYZER</div>
+  </div>
+
+  <div class="scan-section">
+    <input type="text" class="url-input" id="urlInput" placeholder="Enter domain or URL to scan...">
+    <button class="btn" id="scanBtn">ANALYZE DOMAIN</button>
+    <button class="btn" id="scanCurrentBtn" style="margin-top: 6px; border-color: #4a7a4a; color: #4a7a4a;">SCAN CURRENT TAB</button>
+  </div>
+
+  <div class="result-section" id="resultSection">
+    <div class="score-display" id="scoreDisplay">
+      <div class="score-value" id="scoreValue">--</div>
+      <div class="score-label">RISK SCORE</div>
+      <div class="score-verdict" id="scoreVerdict">--</div>
+    </div>
+
+    <div class="section-title">Details</div>
+    <div class="detail-row">
+      <span class="detail-label">Domain</span>
+      <span class="detail-value" id="detailDomain">--</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">IP Address</span>
+      <span class="detail-value" id="detailIP">--</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">SSL Issuer</span>
+      <span class="detail-value" id="detailSSL">--</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Domain Age</span>
+      <span class="detail-value" id="detailAge">--</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Registrar</span>
+      <span class="detail-value" id="detailRegistrar">--</span>
+    </div>
+
+    <div class="section-title">Findings</div>
+    <div class="findings-list" id="findingsList"></div>
+  </div>
+
+  <div class="loading" id="loadingSection" style="display: none;">
+    <div class="spinner"></div>
+    <div>Scanning domain...</div>
+  </div>
+
+  <div class="error-section" id="errorSection" style="display: none; padding: 12px 20px;">
+    <div class="error-msg" id="errorMsg"></div>
+  </div>
+
+  <div class="footer">RETRO_INTEL v4.0 | Freebuff</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -38,15 +38,26 @@ import math
 # These are NOT brand impersonation or typosquatting — they are names
 # that intrinsically hint at unsafe activity. A mild penalty is applied
 # to prevent such domains from reaching 0/100 purely via trust bonuses.
+#
+# Refined to avoid false positives on legitimate security research domains:
+# - "exploit" -> "exploitkit", "exploitshop" (exploit-db.com is legitimate)
+# - "hack" -> "hacktool", "hackservice" (hackerone.com, hackthebox.com are legitimate)
+# - "crack" -> "cracked", "crackme" (crackmes.de is legitimate)
 SUSPICIOUS_NAME_PATTERNS: frozenset[str] = frozenset({
-    "exploit", "xploit", "hack", "hax", "crack", "keygen",
+    "exploitkit", "exploitshop", "exploitsite",
+    "hacktool", "hackservice", "hackteam", "hacksite",
+    "cracked", "crackme", "cracksite", "cracktool",
+    "keygen", "keygenn", "keygenerator",
     "malware", "ransom", "trojan", "virus", "worm",
-    "phish", "phising", "scam", "fraud",
-    "spam", "spammy", "spammer",
-    "ddos", "dosattack", "botnet", "c2server",
+    "phish", "phising", "phishkit", "phishsite",
+    "scam", "fraud", "scamsite", "fraudsite",
+    "spam", "spammy", "spammer", "spamsite",
+    "ddos", "dosattack", "botnet", "c2server", "c2panel",
     "darknet", "darkweb", "onion",
-    "stolen", "leak", "leaked", "doxx",
-    "cheat", "cheats", "modmenu",
+    "stolen", "leak", "leaked", "doxx", "dump",
+    "cheat", "cheats", "modmenu", "cheatsite",
+    "stealer", "logger", "rat", "rootkit", "booter", "stresser",
+    "carding", "cvv", "dumps", "fullz", "banklogs",
 })
 
 # Threat Level Thresholds: (lo, hi, label, severity)
@@ -210,11 +221,11 @@ def is_government_domain(domain: str) -> bool:
     Check if domain is a government (.gov, .gov.*) or education (.edu) or military (.mil) domain.
 
     Checks only the TLD (last label) and second-level domain (second-to-last label)
-    to avoid false positives like \"something.gov.com\" (which is NOT a government domain).
+    to avoid false positives like "something.gov.com" (which is NOT a government domain).
 
     Matching patterns:
       - .gov          : whitehouse.gov, usa.gov
-      - .gov.*        : example.gov.in, example.gov.uk, example.gov.au
+      - .gov.*        : example.gov.in, example.gov.uk, example.gov.au (country-code TLDs)
       - .edu          : harvard.edu, mit.edu
       - .mil          : army.mil
     """
@@ -231,7 +242,8 @@ def is_government_domain(domain: str) -> bool:
         return True
 
     # Second-level .gov.* domains: .gov.in, .gov.uk, .gov.au, etc.
-    if sld == "gov":
+    # Only match if TLD is a 2-letter country code (not .com, .net, .org, etc.)
+    if sld == "gov" and len(tld) == 2 and tld.isalpha():
         return True
 
     return False

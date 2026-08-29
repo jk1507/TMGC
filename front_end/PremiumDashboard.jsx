@@ -53,6 +53,8 @@ export default function PremiumDashboard({
   shareReport,
   scrollToSection,
   setUser,
+  deepScan,
+  setDeepScan,
   NAV_ITEMS,
   TMGC_VERSION,
 }) {
@@ -227,6 +229,15 @@ export default function PremiumDashboard({
                   {loading ? "ANALYZING..." : "ANALYZE"}
                 </button>
               </div>
+              <label className="mt-2 flex w-fit cursor-pointer items-center gap-2 rounded-lg border border-green-900/30 bg-black/30 px-3 py-2 text-[11px] font-semibold text-zinc-500 transition hover:border-green-700/40 hover:text-green-400">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-green-500"
+                  checked={deepScan}
+                  onChange={(event) => setDeepScan(event.target.checked)}
+                />
+                Deep scan
+              </label>
             </div>
 
             <div className="flex items-center gap-2">
@@ -256,7 +267,7 @@ export default function PremiumDashboard({
               </button>
               <div className="hidden items-center gap-2 rounded-lg border border-green-900/30 px-3 py-2 text-xs text-zinc-500 md:flex">
                 <span className="max-w-[120px] truncate text-green-600">{user.email}</span>
-                <button type="button" className="text-red-400 hover:text-red-300" onClick={() => { localStorage.removeItem("tmgc_user"); setUser(null); }}>Logout</button>
+                <button type="button" className="text-red-400 hover:text-red-300" onClick={() => { localStorage.removeItem("tmgc_user"); localStorage.removeItem("tmgc_session"); setUser(null); }}>Logout</button>
               </div>
             </div>
           </div>
@@ -1016,7 +1027,7 @@ export default function PremiumDashboard({
 
           <section id="settings" className="tmgc-card rounded-xl p-4 md:hidden">
             <p className="text-xs text-zinc-500">Signed in as {user.email}</p>
-            <button type="button" className="mt-2 text-sm text-red-400" onClick={() => { localStorage.removeItem("tmgc_user"); setUser(null); }}>Logout</button>
+            <button type="button" className="mt-2 text-sm text-red-400" onClick={() => { localStorage.removeItem("tmgc_user"); localStorage.removeItem("tmgc_session"); setUser(null); }}>Logout</button>
           </section>
           </>
           )}

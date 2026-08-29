@@ -37,6 +37,15 @@ from typing import Any
 import numpy as np
 import re
 
+# Import unified TLD lists from utils
+try:
+    from utils import SUSPICIOUS_TLDS, SUSPICIOUS_TLDS_DOT
+except ImportError:
+    SUSPICIOUS_TLDS = frozenset({"xyz", "top", "club", "online", "site", "web", "info", "biz",
+        "tk", "ml", "ga", "cf", "gq", "pw", "ws", "icu", "click",
+        "cam", "mom", "work", "vip", "support", "email", "live", "loan"})
+    SUSPICIOUS_TLDS_DOT = frozenset("." + tld for tld in SUSPICIOUS_TLDS)
+
 warnings.filterwarnings("ignore")
 
 # Fix Windows cp1252 console encoding
@@ -469,9 +478,6 @@ def compute_feature_vector(
                 normalized_tokens.add(t)
     unique_token_count = min(len(normalized_tokens) / 5.0, 1.0)
 
-    # Suspicious TLDs list (matches main.py)
-    SUSPICIOUS_TLDS_SET = {".top", ".xyz", ".click", ".work", ".live", ".loan", ".cc", ".tk", ".gq", ".ml"}
-
     # KNOWN_BRANDS (matches main.py)
     KNOWN_BRANDS_LIST = [
         "amazon", "google", "facebook", "paypal", "instagram",
@@ -486,7 +492,7 @@ def compute_feature_vector(
         min(features.get("subdomain_count", len(parts) - 2) / 5.0, 1.0),
         min(features.get("entropy", 3.0) / 5.0, 1.0),
         consonant_ratio,
-        float(features.get("suspicious_tld", ("._" + parts[-1]) in SUSPICIOUS_TLDS_SET) if len(parts) > 1 else 0.0),
+        float(features.get("suspicious_tld", ("." + parts[-1]) in SUSPICIOUS_TLDS_DOT) if len(parts) > 1 else 0.0),
         float(features.get("has_suspicious_keywords", any(k in clean for k in KNOWN_BRANDS_LIST))),
         float(features.get("is_ip_like", False)),
         excessive_hyphens,
@@ -532,7 +538,6 @@ def _compute_feature_vector_fallback(
     tld = parts[-1] if len(parts) >= 2 else ""
     domain_name = clean.split(".", 1)[0]
 
-    SUSPICIOUS_TLDS_SET = {".top", ".xyz", ".click", ".work", ".live", ".loan", ".cc", ".tk", ".gq", ".ml"}
     MAJOR_BRANDS = ["google", "facebook", "microsoft", "apple", "amazon", "paypal", "netflix", "instagram", "linkedin", "github", "whatsapp", "coinbase", "binance"]
     PHISHING_KW = ["login", "signin", "verify", "secure", "account", "auth", "support", "update", "wallet", "pay", "billing"]
 
@@ -568,7 +573,7 @@ def _compute_feature_vector_fallback(
         min((len(parts) - 2) / 5.0, 1.0),
         min(3.0 / 5.0, 1.0),
         consonant_ratio,
-        1.0 if ("." + tld) in SUSPICIOUS_TLDS_SET else 0.0,
+        1.0 if ("." + tld) in SUSPICIOUS_TLDS_DOT else 0.0,
         1.0 if has_brand else 0.0,
         0.0,
         1.0 if hyphen_count >= 3 else 0.0,

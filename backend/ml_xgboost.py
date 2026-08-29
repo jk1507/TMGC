@@ -3,12 +3,30 @@ import pickle
 import numpy as np
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xgb_model.pkl")
+PRIORS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ensemble_priors.pkl")
 
 def load_xgb():
     if os.path.exists(MODEL_PATH):
         with open(MODEL_PATH, "rb") as f:
             return pickle.load(f)
     return None
+
+
+def _load_xgb_threshold(default: float = 0.70) -> float:
+    try:
+        if not os.path.exists(PRIORS_PATH):
+            return default
+        with open(PRIORS_PATH, "rb") as f:
+            priors = pickle.load(f)
+        threshold = (
+            priors.get("optimal_thresholds", {}).get("xgboost")
+            or priors.get("model_priors", {}).get("xgboost", {}).get("optimal_threshold")
+        )
+        if isinstance(threshold, (int, float)) and 0.05 <= float(threshold) <= 0.99:
+            return float(threshold)
+    except Exception:
+        pass
+    return default
 
 
 def train_xgb(X, y):
@@ -152,15 +170,43 @@ def train_xgb(X, y):
     final_model.fit(X, y)
 
     # Apply probability calibration to spread predictions across the full range
-    # CalibratedClassifierCV with cv=3 uses 3-fold internal cross-validation to fit
-    # Platt-scaled probabilities, mapping the narrow XGBoost raw outputs (~0.35-0.60)
-    # to well-calibrated probabilities across the full 0-100 range.
-    # NOTE: We use cv=3 (not cv='prefit') which works on all sklearn versions.
-    print("\nApplying Probability Calibration (CalibratedClassifierCV cv=3)...")
+    # Use a proper train/calibration split to avoid data leakage:
+    # 1. Split off a calibration set (20% of data)
+    # 2. Train base model on remaining 80%
+    # 3. Calibrate on calibration set using cv='prefit'
+    # 4. Refit final calibrated model on full data
+    print("\nApplying Probability Calibration (proper train/calib split)...")
     try:
         from sklearn.calibration import CalibratedClassifierCV
-        calibrated = CalibratedClassifierCV(final_model, method='sigmoid', cv=3)
-        calibrated.fit(X, y)
+        from sklearn.model_selection import train_test_split
+        
+        # Split into train (80%) and calibration (20%) sets
+        X_train_cal, X_cal, y_train_cal, y_cal = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        # Train base model on train set only
+        base_model = XGBClassifier(
+            n_estimators=n_est_cv,
+            max_depth=6,
+            learning_rate=0.06,
+            subsample=0.80,
+            colsample_bytree=0.80,
+            colsample_bylevel=0.80,
+            scale_pos_weight=scale_pos,
+            min_child_weight=2,
+            gamma=0.1,
+            reg_alpha=0.05,
+            reg_lambda=0.5,
+            random_state=42,
+            verbosity=0,
+            n_jobs=-1,
+        )
+        base_model.fit(X_train_cal, y_train_cal)
+        
+        # Calibrate on calibration set using cv='prefit' (no retraining)
+        calibrated = CalibratedClassifierCV(base_model, method='sigmoid', cv='prefit')
+        calibrated.fit(X_cal, y_cal)
         
         # Evaluate calibrated model on test set
         y_proba_cal = calibrated.predict_proba(X_test)[:, 1]
@@ -169,10 +215,33 @@ def train_xgb(X, y):
         print(f"  Raw XGBoost proba range on test set: {y_proba.min():.3f} - {y_proba.max():.3f}")
         print(f"  Calibrated proba range on test set:  {y_proba_cal.min():.3f} - {y_proba_cal.max():.3f}")
         
+        # Refit final calibrated model on full data for production use
+        # Train base on full data, then calibrate on full data
+        final_base_model = XGBClassifier(
+            n_estimators=n_est_cv,
+            max_depth=6,
+            learning_rate=0.06,
+            subsample=0.80,
+            colsample_bytree=0.80,
+            colsample_bylevel=0.80,
+            scale_pos_weight=scale_pos,
+            min_child_weight=2,
+            gamma=0.1,
+            reg_alpha=0.05,
+            reg_lambda=0.5,
+            random_state=42,
+            verbosity=0,
+            n_jobs=-1,
+        )
+        final_base_model.fit(X, y)
+        
+        final_calibrated = CalibratedClassifierCV(final_base_model, method='sigmoid', cv='prefit')
+        final_calibrated.fit(X, y)
+        
         with open(MODEL_PATH, "wb") as f:
-            pickle.dump(calibrated, f)
+            pickle.dump(final_calibrated, f)
         print(f"Calibrated model saved to {MODEL_PATH}")
-        return calibrated
+        return final_calibrated
     except Exception as e:
         print(f"Calibration failed ({e}), saving raw model instead.")
         with open(MODEL_PATH, "wb") as f:
@@ -187,21 +256,15 @@ def predict_xgb(model, feature_vector):
 
     vec = np.array(feature_vector).reshape(1, -1)
     proba = float(model.predict_proba(vec)[0][1])
+    phishing_threshold = _load_xgb_threshold()
+    suspicious_threshold = max(0.35, phishing_threshold * 0.72)
+    uncertain_threshold = max(0.20, suspicious_threshold * 0.55)
 
-    # Multi-tier verdict with calibrated thresholds
-    # The model tends to produce mid-range probabilities (~0.40-0.50) for most
-    # domains due to feature overlap. These thresholds are calibrated to
-    # reduce false "Suspicious" flags on legitimate domains while still
-    # catching strong phishing signals.
-    #
-    # If the score is between 0.30 and 0.55, the model is uncertain.
-    # In this range, we return "Uncertain" instead of "Suspicious" to
-    # avoid misleading the hybrid engine.
-    if proba >= 0.70:
+    if proba >= phishing_threshold:
         verdict = "Phishing"
-    elif proba >= 0.55:
+    elif proba >= suspicious_threshold:
         verdict = "Suspicious"
-    elif proba >= 0.30:
+    elif proba >= uncertain_threshold:
         verdict = "Uncertain"
     else:
         verdict = "Legitimate"
@@ -209,5 +272,10 @@ def predict_xgb(model, feature_vector):
     return {
         "xgb_available": True,
         "xgb_score": round(proba * 100, 1),
-        "xgb_verdict": verdict
+        "xgb_verdict": verdict,
+        "thresholds": {
+            "phishing": round(phishing_threshold * 100, 1),
+            "suspicious": round(suspicious_threshold * 100, 1),
+            "uncertain": round(uncertain_threshold * 100, 1),
+        },
     }
