@@ -23,7 +23,7 @@ export function Dot({ enabled }) {
   return (
     <span
       className={`inline-block h-2.5 w-2.5 rounded-full ${
-        enabled ? "bg-green-400 shadow-[0_0_10px_rgba(74,222,128,0.9)]" : "animate-pulse bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]"
+        enabled ? "bg-[#00ff88] shadow-[0_0_10px_rgba(0,255,136,0.9)]" : "animate-pulse bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]"
       }`}
     />
   );
@@ -31,9 +31,9 @@ export function Dot({ enabled }) {
 
 export function Matrix({ label, value }) {
   return (
-    <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
-      <span className="block text-[10px] font-bold tracking-wider text-green-800">{label}</span>
-      <strong className="break-words text-sm text-green-300">{value || "N/A"}</strong>
+    <div className="rounded-lg border border-[#00ff88]/8 bg-black/30 p-3">
+      <span className="block text-[10px] font-bold tracking-wider text-[#00ff88]/40">{label}</span>
+      <strong className="break-words text-sm text-zinc-300">{value || "N/A"}</strong>
     </div>
   );
 }
@@ -57,7 +57,7 @@ export function ExportButton({ disabled, onClick, label }) {
   return (
     <button
       type="button"
-      className="rounded-lg border border-green-500/40 px-2 py-3 text-xs font-bold text-green-300 transition hover:bg-green-500/10 disabled:opacity-40"
+      className="rounded-lg border border-[#00ff88]/25 px-2 py-3 text-xs font-bold text-[#00ff88]/80 transition hover:bg-[#00ff88]/8 disabled:opacity-40"
       disabled={disabled}
       onClick={onClick}
     >

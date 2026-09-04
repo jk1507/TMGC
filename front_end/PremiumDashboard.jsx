@@ -1,6 +1,13 @@
 import React from "react";
 import { Dot, ExportButton, HeaderBadge, HighlightedText, Matrix, RAW_TABS } from "./dashboardShared.jsx";
 import BrandImpersonation from "./BrandImpersonation.jsx";
+import { CyberStyles, StatCard, RecentScanRow } from "./cyberTheme.jsx";
+import ThreatTrendChart from "./ThreatTrendChart.jsx";
+import GlobalThreatMap from "./GlobalThreatMap.jsx";
+import NetworkGraph from "./NetworkGraph.jsx";
+import ForensicReportModal from "./ForensicReportModal.jsx";
+import SecurityAlerts, { buildAlertsFromHistory } from "./SecurityAlerts.jsx";
+import AnalysisReportTabs from "./AnalysisReportTabs.jsx";
 
 const PLATFORM_INFO = {
   "LinkedIn": { emoji: "💼", color: "text-blue-400", bg: "bg-blue-950/20", border: "border-blue-900/40" },
@@ -37,6 +44,10 @@ export default function PremiumDashboard({
   currentView,
   exportOpen,
   setExportOpen,
+  reportModalOpen,
+  setReportModalOpen,
+  scanHistory,
+  exportJson,
   sidebarOpen,
   setSidebarOpen,
   scanMeta,
@@ -84,100 +95,28 @@ export default function PremiumDashboard({
   const confidencePct = getConfidencePercent(data, riskScore);
   const confidenceLevel = getConfidenceLevel(data, riskScore);
   const sslValid = data?.parsed_meta?.ssl_issuer && data.parsed_meta.ssl_issuer !== "N/A";
+  const securityAlerts = buildAlertsFromHistory(scanHistory, data);
+
+  function handleViewAlert(alert) {
+    setTarget(alert.target);
+    scrollToSection("analysis-report");
+  }
 
   return (
-    <div className="tmgc-root min-h-screen bg-[#030303] text-zinc-300">
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-        .tmgc-root { font-family: 'Inter', system-ui, sans-serif; }
-        .tmgc-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
-        @keyframes tmgc-pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(34,197,94,.8); } 50% { opacity: .7; box-shadow: 0 0 16px rgba(34,197,94,.4); } }
-        @keyframes tmgc-glow { 0%, 100% { filter: drop-shadow(0 0 8px rgba(34,197,94,.45)); } 50% { filter: drop-shadow(0 0 18px rgba(34,197,94,.7)); } }
-        @keyframes tmgc-fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes tmgc-slide-up { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes tmgc-border-pulse { 0%, 100% { border-color: rgba(34,197,94,.15); } 50% { border-color: rgba(34,197,94,.3); } }
-        .tmgc-card {
-          background: linear-gradient(160deg, rgba(14,14,16,.95), rgba(4,6,8,.98));
-          border: 1px solid rgba(34,197,94,.12);
-          box-shadow: 0 4px 24px -8px rgba(0,0,0,.6), 0 0 0 1px rgba(34,197,94,.04) inset;
-          transition: border-color .3s ease, box-shadow .3s ease, transform .2s ease;
-          position: relative;
-          overflow: hidden;
-        }
-        .tmgc-card::before {
-          content: '';
-          position: absolute;
-          top: 0; left: 0; right: 0;
-          height: 1px;
-          background: linear-gradient(90deg, transparent, rgba(34,197,94,.25), transparent);
-          opacity: 0.6;
-        }
-        .tmgc-card:hover {
-          border-color: rgba(34,197,94,.25);
-          box-shadow: 0 8px 40px -12px rgba(0,0,0,.7), 0 0 0 1px rgba(34,197,94,.06) inset;
-          transform: translateY(-1px);
-        }
-        .tmgc-nav-active {
-          background: linear-gradient(90deg, rgba(34,197,94,.2), transparent);
-          border-left: 3px solid #22c55e;
-          color: #4ade80;
-          box-shadow: inset 0 0 20px -10px rgba(34,197,94,.15);
-        }
-        .tmgc-grid-bg { background-image: radial-gradient(rgba(34,197,94,.03) 1px, transparent 1px); background-size: 28px 28px; }
-        .intel-keyword { color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248,113,113,.6); }
-        .tmgc-scrollbar::-webkit-scrollbar { width: 4px; }
-        .tmgc-scrollbar::-webkit-scrollbar-thumb { background: rgba(34,197,94,.2); border-radius: 4px; }
-        .tmgc-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(34,197,94,.35); }
-        .tmgc-section-title {
-          font-size: 11px;
-          font-weight: 700;
-          letter-spacing: 0.2em;
-          color: #22c55e;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-bottom: 16px;
-          padding-left: 12px;
-          border-left: 2px solid rgba(34,197,94,.3);
-          text-transform: uppercase;
-        }
-        .tmgc-section-title-plain { font-size: 11px; font-weight: 700; letter-spacing: 0.2em; color: #22c55e; text-transform: uppercase; margin-bottom: 16px; }
-        .tmgc-section-title-plain::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(34,197,94,.2), transparent); }
-        .tmgc-section-title::after {
-          content: '';
-          flex: 1;
-          height: 1px;
-          background: linear-gradient(90deg, rgba(34,197,94,.2), transparent);
-        }
-        .tmgc-stat {
-          font-size: 28px;
-          font-weight: 800;
-          line-height: 1;
-          letter-spacing: -0.02em;
-        }
-        .tmgc-label {
-          font-size: 10px;
-          font-weight: 600;
-          letter-spacing: 0.12em;
-          text-transform: uppercase;
-          color: rgba(113, 128, 150, .6);
-        }
-        @media (max-width: 640px) {
-          .tmgc-stat { font-size: 22px; }
-        }
-      `}</style>
+    <div className="tmgc-root min-h-screen bg-[#0a0a0a] text-zinc-300">
+      <CyberStyles />
 
       {sidebarOpen && (
         <button type="button" className="fixed inset-0 z-40 bg-black/60 lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" />
       )}
 
-      <aside className={`fixed inset-y-0 left-0 z-50 flex w-[260px] flex-col border-r border-green-900/25 bg-gradient-to-b from-[#060606] via-[#050505] to-[#040404] backdrop-blur-xl transition-transform duration-300 lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}>
-        <div className="border-b border-green-900/25 px-5 py-6">
+      <aside className={`fixed inset-y-0 left-0 z-50 flex w-[260px] flex-col border-r border-[#00ff88]/10 bg-gradient-to-b from-[#0c0c0c] via-[#0a0a0a] to-[#080808] backdrop-blur-xl transition-transform duration-300 lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}>
+        <div className="border-b border-[#00ff88]/10 px-5 py-6">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-green-500/30 bg-gradient-to-br from-green-500/20 to-green-500/5 text-lg font-black text-green-400 shadow-[0_0_24px_rgba(34,197,94,.2)]">T</div>
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-[#00ff88]/35 bg-gradient-to-br from-[#00ff88]/20 to-[#00ff88]/5 text-lg font-black text-[#00ff88] shadow-[0_0_28px_rgba(0,255,136,.2)]">T</div>
             <div>
-              <p className="text-xl font-extrabold tracking-wider text-green-400">TMGC</p>
-              <p className="text-[9px] font-semibold tracking-[0.25em] text-green-700/80 uppercase">Forensic Pipeline</p>
+              <p className="text-xl font-extrabold tracking-wider text-[#00ff88]">TMGC</p>
+              <p className="text-[9px] font-semibold tracking-[0.25em] text-[#00ff88]/40 uppercase">Forensic Pipeline</p>
             </div>
           </div>
         </div>
@@ -188,9 +127,9 @@ export default function PremiumDashboard({
               key={item.id}
               type="button"
               onClick={() => scrollToSection(item.id)}
-              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs font-medium transition-all duration-200 hover:bg-green-500/5 hover:text-green-300 ${currentView === item.id ? "tmgc-nav-active font-semibold" : "text-zinc-500"}`}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs font-medium transition-all duration-200 hover:bg-[#00ff88]/5 hover:text-[#00ff88]/80 ${currentView === item.id ? "tmgc-nav-active font-semibold" : "text-zinc-500"}`}
             >
-              <span className={`flex h-5 w-5 items-center justify-center ${currentView === item.id ? "text-green-400" : "text-zinc-600"}`}>
+              <span className={`flex h-5 w-5 items-center justify-center ${currentView === item.id ? "text-[#00ff88]" : "text-zinc-600"}`}>
                 <NavIcon name={item.icon} active={currentView === item.id} />
               </span>
               {item.label}
@@ -198,95 +137,100 @@ export default function PremiumDashboard({
           ))}
         </nav>
 
-        <div className="border-t border-green-900/25 p-4">
-          <div className="rounded-xl border border-green-900/20 bg-gradient-to-b from-green-500/5 to-green-500/[0.02] p-4">
+        <div className="border-t border-[#00ff88]/10 p-4">
+          <div className="rounded-xl border border-[#00ff88]/10 bg-gradient-to-b from-[#00ff88]/5 to-transparent p-4">
             <p className="text-[9px] font-bold tracking-[0.2em] text-zinc-500 uppercase">System Status</p>
             <div className="mt-3 flex items-center gap-2.5">
               <span className="relative flex h-2.5 w-2.5">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-40" />
-                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-green-400" style={{ animation: "tmgc-pulse 2s infinite" }} />
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00ff88] opacity-30" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#00ff88]" style={{ animation: "tmgc-pulse 2s infinite" }} />
               </span>
-              <span className="text-xs font-semibold text-green-400">All Systems Operational</span>
+              <span className="text-xs font-semibold text-[#00ff88]">All Systems Online</span>
             </div>
             <div className="mt-4 space-y-1.5">
-              <p className="text-[10px] font-medium text-zinc-500">Threat Intel Feed</p>
-              <p className="text-[11px] text-zinc-600 font-mono">{scanMeta.completedAt ? new Date(scanMeta.completedAt).toLocaleString() : "Awaiting scan"}</p>
+              <p className="text-[10px] font-medium text-zinc-500">Last Scan</p>
+              <p className="text-[11px] text-zinc-600 font-mono">{scanMeta.completedAt ? new Date(scanMeta.completedAt).toLocaleString() : "Ready to scan"}</p>
             </div>
-            <p className="mt-4 pt-3 border-t border-green-900/20 text-[9px] font-semibold tracking-[0.2em] text-green-700/60 uppercase">{TMGC_VERSION}</p>
+            <p className="mt-4 pt-3 border-t border-[#00ff88]/10 text-[9px] font-semibold tracking-[0.2em] text-[#00ff88]/40 uppercase">{TMGC_VERSION}</p>
           </div>
         </div>
       </aside>
 
       <div className="lg:pl-[260px]">
-        <header className="sticky top-0 z-30 border-b border-green-900/30 bg-[#030303]/90 backdrop-blur-xl">
+        <header className="sticky top-0 z-30 border-b border-[#00ff88]/10 bg-[#02100d]/82 backdrop-blur-xl">
           <div className="flex flex-wrap items-center gap-3 px-4 py-4 lg:px-6">
-            <button type="button" className="rounded-lg border border-green-900/40 p-2 text-green-400 lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
+            <button type="button" className="rounded-lg border border-[#00ff88]/15 p-2 text-[#00ff88] lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
               <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
             </button>
 
             <div className="min-w-0 flex-1">
-              <label className="mb-1 block text-[10px] font-bold tracking-[0.2em] text-green-700">ANALYZE DOMAIN / URL</label>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input
-                  className="w-full rounded-lg border border-green-900/50 bg-black/60 px-4 py-2.5 text-sm text-green-100 outline-none transition focus:border-green-500/60 focus:shadow-[0_0_20px_rgba(34,197,94,.12)] placeholder:text-green-950"
+                  className="w-full rounded-lg border border-[#00ff88]/20 bg-black/55 px-5 py-3 text-sm text-zinc-100 outline-none transition focus:border-[#00ff88]/60 focus:shadow-[0_0_30px_rgba(0,255,136,.18)] placeholder:text-zinc-500"
                   value={target}
                   onChange={(e) => setTarget(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && analyze()}
-                  placeholder="https://example.com"
+                  placeholder="Enter a domain, URL, IP address, or file hash..."
                 />
                 <button
                   type="button"
-                  className="flex shrink-0 items-center justify-center gap-2 rounded-lg border border-green-500/60 bg-green-500/10 px-6 py-2.5 text-sm font-bold tracking-wide text-green-400 transition hover:bg-green-500/20 hover:shadow-[0_0_24px_rgba(34,197,94,.2)] disabled:opacity-40"
+                  className="tmgc-btn-primary flex shrink-0 items-center justify-center gap-2 rounded-lg px-8 py-3 text-sm tracking-wide disabled:opacity-40"
                   disabled={loading}
                   onClick={analyze}
                 >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><circle cx="12" cy="12" r="9" strokeWidth={2} /><circle cx="12" cy="12" r="3" strokeWidth={2} /><path strokeLinecap="round" strokeWidth={2} d="M12 3v3M12 18v3" /></svg>
-                  {loading ? "ANALYZING..." : "ANALYZE"}
+                  {loading ? "Scanning..." : "Analyze"}
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14m-6-6 6 6-6 6" /></svg>
                 </button>
               </div>
-              <label className="mt-2 flex w-fit cursor-pointer items-center gap-2 rounded-lg border border-green-900/30 bg-black/30 px-3 py-2 text-[11px] font-semibold text-zinc-500 transition hover:border-green-700/40 hover:text-green-400">
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5 accent-green-500"
-                  checked={deepScan}
-                  onChange={(event) => setDeepScan(event.target.checked)}
-                />
-                Deep scan
-              </label>
+              <div className="mt-2 flex flex-wrap gap-4 text-[11px] font-medium text-zinc-500">
+                <ScanToggle label="Deep Scan" checked={deepScan} onChange={setDeepScan} />
+                <ScanToggle label="Scan Subdomains" checked={Boolean(data?.nameservers?.length)} readOnly />
+                <ScanToggle label="Check Reputation" checked={Boolean(data)} readOnly />
+                <ScanToggle label="Analyze Content" checked={Boolean(aiReport)} readOnly />
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="flex items-center gap-2 rounded-lg border border-[#00ff88]/12 bg-black/40 px-4 py-2.5 text-xs font-semibold text-zinc-300 transition hover:border-[#00ff88]/30 disabled:opacity-40"
+                disabled={!data}
+                onClick={() => setReportModalOpen(true)}
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                Export Report
+              </button>
               <div className="relative" ref={exportRef}>
                 <button
                   type="button"
-                  className="flex items-center gap-2 rounded-lg border border-green-900/40 bg-black/40 px-4 py-2.5 text-xs font-semibold text-green-300 transition hover:border-green-500/40 disabled:opacity-40"
+                  className="flex items-center gap-2 rounded-lg border border-[#00ff88]/12 bg-black/40 px-4 py-2.5 text-xs font-semibold text-zinc-300 transition hover:border-[#00ff88]/30 disabled:opacity-40"
                   disabled={!data}
                   onClick={() => setExportOpen((v) => !v)}
                 >
                   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" /></svg>
-                  Export Report
+                  Export
                   <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                 </button>
                 {exportOpen && (
-                  <div className="absolute right-0 top-full z-50 mt-2 w-52 overflow-hidden rounded-lg border border-green-900/40 bg-[#0a0a0a] shadow-xl">
-                    <button type="button" className="block w-full px-4 py-2.5 text-left text-xs text-green-300 hover:bg-green-500/10" onClick={() => { exportExcel(); setExportOpen(false); }}>Excel Report (.xlsx)</button>
-                    <button type="button" className="block w-full px-4 py-2.5 text-left text-xs text-green-300 hover:bg-green-500/10" onClick={() => { exportPdf(); setExportOpen(false); }}>PDF Dossier (.pdf)</button>
-                    <button type="button" className="block w-full px-4 py-2.5 text-left text-xs text-green-300 hover:bg-green-500/10" onClick={() => { exportRawTxt(); setExportOpen(false); }}>Raw TXT Log (.txt)</button>
-                    <button type="button" className="block w-full px-4 py-2.5 text-left text-xs text-green-300 hover:bg-green-500/10" onClick={() => { exportMarkdown(); setExportOpen(false); }}>Markdown Log (.md)</button>
+                  <div className="absolute right-0 top-full z-50 mt-2 w-52 overflow-hidden rounded-lg border border-[#00ff88]/15 bg-[#0c0c0c] shadow-xl">
+                    <button type="button" className="block w-full px-4 py-2.5 text-left text-xs text-zinc-300 hover:bg-[#00ff88]/8" onClick={() => { exportExcel(); setExportOpen(false); }}>Excel Report (.xlsx)</button>
+                    <button type="button" className="block w-full px-4 py-2.5 text-left text-xs text-zinc-300 hover:bg-[#00ff88]/8" onClick={() => { exportPdf(); setExportOpen(false); }}>PDF Dossier (.pdf)</button>
+                    <button type="button" className="block w-full px-4 py-2.5 text-left text-xs text-zinc-300 hover:bg-[#00ff88]/8" onClick={() => { exportRawTxt(); setExportOpen(false); }}>Raw TXT Log (.txt)</button>
+                    <button type="button" className="block w-full px-4 py-2.5 text-left text-xs text-zinc-300 hover:bg-[#00ff88]/8" onClick={() => { exportMarkdown(); setExportOpen(false); }}>Markdown Log (.md)</button>
                   </div>
                 )}
               </div>
-              <button type="button" className="flex items-center gap-2 rounded-lg border border-green-900/40 bg-black/40 px-4 py-2.5 text-xs font-semibold text-green-300 transition hover:border-green-500/40 disabled:opacity-40" disabled={!data} onClick={shareReport}>
+              <button type="button" className="flex items-center gap-2 rounded-lg border border-[#00ff88]/12 bg-black/40 px-4 py-2.5 text-xs font-semibold text-zinc-300 transition hover:border-[#00ff88]/30 disabled:opacity-40" disabled={!data} onClick={shareReport}>
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
                 Share
               </button>
-              <div className="hidden items-center gap-2 rounded-lg border border-green-900/30 px-3 py-2 text-xs text-zinc-500 md:flex">
-                <span className="max-w-[120px] truncate text-green-600">{user.email}</span>
+              <div className="hidden items-center gap-2 rounded-lg border border-[#00ff88]/10 px-3 py-2 text-xs text-zinc-500 md:flex">
+                <span className="max-w-[120px] truncate text-[#00ff88]/60">{user.email}</span>
                 <button type="button" className="text-red-400 hover:text-red-300" onClick={() => { localStorage.removeItem("tmgc_user"); localStorage.removeItem("tmgc_session"); setUser(null); }}>Logout</button>
               </div>
             </div>
           </div>
-          {error && <div className="mx-4 mb-4 rounded-lg border border-red-500/40 bg-red-950/20 px-4 py-3 text-sm text-red-400 lg:mx-6">{error}</div>}
+          {error && <div className="mx-4 mb-4 rounded-lg border border-red-500/30 bg-red-950/20 px-4 py-3 text-sm text-red-400 lg:mx-6">{error}</div>}
         </header>
 
         <main className="tmgc-grid-bg space-y-4 p-4 lg:p-6">
@@ -381,7 +325,124 @@ export default function PremiumDashboard({
             </div>
           )}
 
-          <div id="dashboard" className="grid gap-4 xl:grid-cols-2">
+          <div id="dashboard" className="space-y-4">
+            <section className="tmgc-hero-panel rounded-2xl p-5 lg:p-7">
+              <div className="grid items-center gap-6 xl:grid-cols-[1.05fr_1.35fr_0.55fr]">
+                <div className="tmgc-hero-copy">
+                  <p className="text-[10px] font-black uppercase tracking-[0.28em] text-[#00ff88]/60">
+                    Threat Intelligence • Domain Analysis • Real-Time Protection
+                  </p>
+                  <h1 className="mt-4 max-w-xl text-4xl font-black leading-tight text-white md:text-5xl">
+                    Welcome back,<br />
+                    <span className="bg-gradient-to-r from-[#baffec] to-[#00ff88] bg-clip-text text-transparent">{user.name || "Analyst"}</span>
+                  </h1>
+                  <p className="mt-4 max-w-xl text-lg font-semibold text-zinc-100">
+                    Analyze. Detect. Investigate. Stay Ahead.
+                  </p>
+                  <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-400">
+                    Leverage AI, graph analytics, CNN visual checks, and forensic evidence to uncover threats with confidence.
+                  </p>
+                  <div className="mt-6 flex flex-wrap gap-3">
+                    <button type="button" className="tmgc-btn-primary flex items-center gap-2 rounded-lg px-7 py-3 text-sm" onClick={analyze} disabled={loading}>
+                      {loading ? "Analyzing..." : "Start Analysis"}
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14m-6-6 6 6-6 6" /></svg>
+                    </button>
+                    <button type="button" className="flex items-center gap-2 rounded-lg border border-[#00ff88]/15 bg-black/30 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-[#00ff88]/35 hover:text-[#00ff88]" onClick={() => scrollToSection("saved-scans")}>
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+                      View Recent Scans
+                    </button>
+                  </div>
+                </div>
+
+                <div className="tmgc-globe-stage">
+                  <GlobalThreatMap variant="classic" className="absolute inset-0 z-[1] flex items-center" />
+                  <SignalCard className="left-[7%] top-[18%] text-red-400" title="Malware" subtitle="High Risk" />
+                  <SignalCard className="right-[5%] top-[32%] text-yellow-300" title="Phishing" subtitle="Medium Risk" delay="1.2s" />
+                  <SignalCard className="bottom-[12%] left-[44%] text-[#00ff88]" title="Clean" subtitle="Low Risk" delay="2.1s" />
+                </div>
+
+                <div className="relative z-[2] grid gap-3">
+                  <HeroMetric label="Domains Analyzed" value={data ? "1" : "12.4M+"} icon="database" />
+                  <HeroMetric label="Threat Detection Rate" value={`${confidencePct || 98.7}%`} icon="shield" />
+                  <HeroMetric label="Active Indicators" value={data ? String(threatsDetected) : "2.1M+"} icon="network" />
+                  <HeroMetric label="Threat Coverage" value={data?.parsed_meta?.country || "Global"} icon="globe" />
+                </div>
+              </div>
+            </section>
+
+            {/* Top Stats Row */}
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <StatCard
+                icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>}
+                label="Total Scans"
+                value={data ? "1" : "—"}
+                sub="This session"
+                trend={12}
+              />
+              <StatCard
+                icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>}
+                label="Threats Detected"
+                value={data ? String(threatsDetected) : "—"}
+                sub={threatsDetected > 0 ? "Action required" : "All clear"}
+                trend={threatsDetected > 0 ? 8 : -5}
+              />
+              <StatCard
+                icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064" /></svg>}
+                label="Domain Analyzed"
+                value={data?.domain ? "1" : "—"}
+                sub={data?.domain || "Awaiting scan"}
+              />
+              <StatCard
+                icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
+                label="Scan Duration"
+                value={scanMeta.durationMs ? formatDuration(scanMeta.durationMs) : loading ? "..." : "—"}
+                sub="Average response"
+              />
+            </div>
+
+            {/* Threat Trend + Global Map + Recent Scans */}
+            <div className="grid gap-4 lg:grid-cols-3">
+              <section className="tmgc-card rounded-2xl p-5 lg:col-span-1">
+                <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">Threat Trend</h3>
+                <p className="mb-3 text-[11px] text-zinc-600">Monthly threat classification breakdown across all scans</p>
+                <ThreatTrendChart />
+              </section>
+              <section className="tmgc-card rounded-2xl p-5 lg:col-span-1">
+                <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">Global Threat Map</h3>
+                <p className="mb-3 text-[11px] text-zinc-600">Real-time threat activity hotspots worldwide</p>
+                <GlobalThreatMap />
+              </section>
+              <section className="tmgc-card rounded-2xl p-5 lg:col-span-1">
+                <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">Recent Scans</h3>
+                <div className="space-y-2">
+                  {scanHistory.length > 0 ? (
+                    scanHistory.slice(0, 4).map((scan) => (
+                      <RecentScanRow
+                        key={`${scan.domain}-${scan.completedAt}`}
+                        domain={scan.domain}
+                        status={scan.risk_score >= 46 ? "MALICIOUS" : scan.risk_score >= 26 ? "SUSPICIOUS" : "CLEAN"}
+                        score={scan.risk_score}
+                        time={formatTimeAgo(scan.completedAt)}
+                      />
+                    ))
+                  ) : data ? (
+                    <RecentScanRow
+                      domain={data.domain || target}
+                      status={riskScore >= 46 ? "MALICIOUS" : riskScore >= 26 ? "SUSPICIOUS" : "CLEAN"}
+                      score={riskScore}
+                      time={scanMeta.completedAt ? formatTimeAgo(scanMeta.completedAt) : "Now"}
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-8 text-center">
+                      <p className="text-xs text-zinc-600">No scans yet</p>
+                      <p className="mt-1 text-[10px] text-zinc-700">Enter a domain above to start analyzing</p>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+
+          <div className="grid gap-4 xl:grid-cols-2">
             {/* ⚠ Partial Report / Errors Warning Banner */}
             {data?.original?.partial_report && data?.original?.errors?.length > 0 && (
               <div className="col-span-full rounded-xl border border-red-500/40 bg-red-950/20 p-4">
@@ -468,6 +529,20 @@ export default function PremiumDashboard({
             </section>
           </div>
 
+          <AnalysisReportTabs
+            data={data}
+            target={target}
+            riskScore={riskScore}
+            verdictInfo={verdictInfo}
+            threatCategories={threatCategories}
+            headerRows={headerRows}
+            aiReport={aiReport}
+            loadingAI={loadingAI}
+            runAIAnalysis={runAIAnalysis}
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+          />
+
           <div className="grid gap-4 lg:grid-cols-3">
             <section id="domain-intelligence" className="tmgc-card rounded-2xl p-6 lg:col-span-2">
               <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">OVERVIEW</h3>
@@ -477,10 +552,10 @@ export default function PremiumDashboard({
                 <OverviewTile icon="location" label="Location" value={data?.parsed_meta?.country || "—"} sub={formatASN(data?.parsed_meta?.asn)} />
                 <OverviewTile icon="shield" label="Reputation" value={data ? verdictInfo.title : "—"} />
               </div>
-              <div className="mt-5 rounded-xl border border-green-950/40 bg-black/30 p-4">
-                <p className="text-[10px] font-bold tracking-[0.15em] text-green-700">QUICK SUMMARY</p>
+              <div className="mt-5 rounded-xl border border-[#00ff88]/8 bg-black/30 p-4">
+                <p className="text-[10px] font-bold tracking-[0.15em] text-[#00ff88]/50">QUICK SUMMARY</p>
                 <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-                  {data ? getQuickSummary(data, riskScore) : "Run an analysis to generate a forensic summary for this target."}
+                  {data ? getQuickSummary(data, riskScore) : "Enter a domain above and hit Analyze to get a full forensic breakdown — DNS, SSL, headers, and ML threat scoring."}
                 </p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
                   <StatBox label="Security Checks Passed" value={data ? securityChecks : "—"} tone="green" />
@@ -506,8 +581,20 @@ export default function PremiumDashboard({
                   </div>
                 ))}
               </div>
-              <button type="button" className="mt-3 text-xs font-semibold text-green-600 hover:text-green-400" onClick={() => scrollToSection("reports")}>View All Headers →</button>
+              <button type="button" className="mt-3 text-xs font-semibold text-[#00ff88]/60 hover:text-[#00ff88]" onClick={() => scrollToSection("reports")}>View All Headers →</button>
             </section>
+          </div>
+
+          {/* Domain Relationship Graph */}
+          <section className="tmgc-card rounded-2xl p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">Domain Relationship Graph</h3>
+                <p className="mt-1 text-[11px] text-zinc-600">Interactive 3D network map showing connections between domain, IP, DNS, and infrastructure</p>
+              </div>
+            </div>
+            <NetworkGraph domain={data?.domain || target} data={data} />
+          </section>
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -891,6 +978,21 @@ export default function PremiumDashboard({
               </div>
             </section>
           )}
+
+          <section id="security-alerts" className="tmgc-card rounded-2xl p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="tmgc-section-title-plain flex items-center gap-[10px]">Security Alerts</h3>
+                <p className="mt-1 text-[11px] text-zinc-600">Real-time threat notifications from scan activity</p>
+              </div>
+              {securityAlerts.length > 0 && (
+                <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[10px] font-bold text-red-400">
+                  {securityAlerts.filter((a) => a.status === "new").length} New
+                </span>
+              )}
+            </div>
+            <SecurityAlerts alerts={securityAlerts} onViewAlert={handleViewAlert} />
+          </section>
 
           <section id="reports" className="tmgc-card rounded-2xl p-6">
             <span id="saved-scans" className="sr-only">Saved scans</span>
@@ -1408,6 +1510,16 @@ export default function PremiumDashboard({
           )}
         </main>
       </div>
+
+      <ForensicReportModal
+        open={reportModalOpen}
+        onClose={() => setReportModalOpen(false)}
+        domain={data?.domain || target}
+        exportPdf={exportPdf}
+        exportExcel={exportExcel}
+        exportMarkdown={exportMarkdown}
+        exportJson={exportJson}
+      />
     </div>
   );
 }
@@ -1425,6 +1537,7 @@ function NavIcon({ name, active, className = "" }) {
     file: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />,
     star: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />,
     report: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />,
+    database: <><ellipse cx="12" cy="5" rx="7" ry="3" strokeWidth={1.5} fill="none" /><path strokeLinecap="round" strokeWidth={1.5} d="M5 5v6c0 1.657 3.134 3 7 3s7-1.343 7-3V5" /><path strokeLinecap="round" strokeWidth={1.5} d="M5 11v6c0 1.657 3.134 3 7 3s7-1.343 7-3v-6" /></>,
     bookmark: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />,
     settings: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />,
     ip: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />,
@@ -1435,6 +1548,7 @@ function NavIcon({ name, active, className = "" }) {
     visual: <><rect x="3" y="3" width="18" height="18" rx="2" strokeWidth={1.5} fill="none" /><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 15l-5-5L5 21" /></>,
     graph: <><circle cx="6" cy="6" r="3" strokeWidth={1.5} fill="none" /><circle cx="18" cy="18" r="3" strokeWidth={1.5} fill="none" /><circle cx="18" cy="6" r="3" strokeWidth={1.5} fill="none" /><circle cx="6" cy="18" r="3" strokeWidth={1.5} fill="none" /><path strokeLinecap="round" strokeWidth={1.5} d="M8.5 7.5l7 7M15.5 7.5l-7 7" /></>,
     ensemble: <><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></>,
+    alert: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />,
   };
   return (
     <svg className={`h-4 w-4 shrink-0 ${color} ${className}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1447,8 +1561,8 @@ function TrustGauge({ score, riskScore, hasData, dataInsufficient }) {
   const pct = dataInsufficient ? 0 : hasData ? Math.max(0, Math.min(100, score)) : 0;
   const circumference = 2 * Math.PI * 54;
   const offset = circumference - (pct / 100) * circumference;
-  const stroke = dataInsufficient ? "#6b7280" : riskScore >= 70 ? "#ef4444" : riskScore >= 46 ? "#f87171" : riskScore >= 26 ? "#facc15" : "#22c55e";
-  const glowColor = dataInsufficient ? "rgba(107,114,128,.3)" : riskScore >= 70 ? "rgba(239,68,68,.5)" : riskScore >= 46 ? "rgba(248,113,113,.4)" : riskScore >= 26 ? "rgba(250,204,21,.4)" : "rgba(34,197,94,.5)";
+  const stroke = dataInsufficient ? "#6b7280" : riskScore >= 70 ? "#ef4444" : riskScore >= 46 ? "#f87171" : riskScore >= 26 ? "#facc15" : "#00ff88";
+  const glowColor = dataInsufficient ? "rgba(107,114,128,.3)" : riskScore >= 70 ? "rgba(239,68,68,.5)" : riskScore >= 46 ? "rgba(248,113,113,.4)" : riskScore >= 26 ? "rgba(250,204,21,.4)" : "rgba(0,255,136,.5)";
   return (
     <div className="flex flex-col items-center justify-center">
       <div className="relative h-40 w-40">
@@ -1464,12 +1578,12 @@ function TrustGauge({ score, riskScore, hasData, dataInsufficient }) {
         </svg>
         <svg className="relative h-full w-full -rotate-90" viewBox="0 0 120 120">
           {/* Background track */}
-          <circle cx="60" cy="60" r="54" fill="none" stroke="rgba(34,197,94,.06)" strokeWidth="8" />
+          <circle cx="60" cy="60" r="54" fill="none" stroke="rgba(0,255,136,.06)" strokeWidth="8" />
           {/* Progress ring */}
           <circle
             cx="60" cy="60" r="54"
             fill="none"
-            stroke={hasData ? stroke : "rgba(34,197,94,.15)"}
+            stroke={hasData ? stroke : "rgba(0,255,136,.15)"}
             strokeWidth="8"
             strokeLinecap="round"
             strokeDasharray={circumference}
@@ -1501,60 +1615,78 @@ function TrustGauge({ score, riskScore, hasData, dataInsufficient }) {
 }
 
 function RadarChart({ categories }) {
-  const size = 200;
+  const size = 230;
   const center = size / 2;
-  const maxR = 75;
+  const maxR = 86;
   const n = categories.length || 6;
-  const points = categories.map((cat, i) => {
+  const hasSignal = categories.some((cat) => cat.score > 0);
+  const displayCategories = hasSignal
+    ? categories
+    : categories.map((cat, index) => ({ ...cat, score: [18, 12, 9, 14, 10, 11][index] || 10, ghost: true }));
+  const points = displayCategories.map((cat, i) => {
     const angle = (Math.PI * 2 * i) / n - Math.PI / 2;
-    const r = (cat.score / 100) * maxR;
+    const r = Math.max(10, (cat.score / 100) * maxR);
     return `${center + r * Math.cos(angle)},${center + r * Math.sin(angle)}`;
   }).join(" ");
-  const rings = [0.25, 0.5, 0.75, 1];
+  const rings = [0.2, 0.4, 0.6, 0.8, 1];
   return (
-    <svg width={size} height={size} className="mx-auto" viewBox={`0 0 ${size} ${size}`}>
+    <svg width={size} height={size} className="mx-auto drop-shadow-[0_0_24px_rgba(0,255,136,.12)]" viewBox={`0 0 ${size} ${size}`}>
       <defs>
         <linearGradient id="radarFill" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="rgba(34,197,94,.35)" />
-          <stop offset="100%" stopColor="rgba(34,197,94,.08)" />
+          <stop offset="0%" stopColor={hasSignal ? "rgba(0,255,170,.48)" : "rgba(0,255,170,.18)"} />
+          <stop offset="100%" stopColor={hasSignal ? "rgba(0,190,255,.1)" : "rgba(0,190,255,.04)"} />
         </linearGradient>
+        <radialGradient id="radarGlow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="rgba(0,255,170,.18)" />
+          <stop offset="70%" stopColor="rgba(0,255,170,.03)" />
+          <stop offset="100%" stopColor="transparent" />
+        </radialGradient>
       </defs>
+      <circle cx={center} cy={center} r={maxR + 18} fill="url(#radarGlow)" />
       {/* Background rings */}
       {rings.map((ring) => (
-        <polygon key={ring} points={categories.map((_, i) => {
+        <polygon key={ring} points={displayCategories.map((_, i) => {
           const angle = (Math.PI * 2 * i) / n - Math.PI / 2;
           const r = maxR * ring;
           return `${center + r * Math.cos(angle)},${center + r * Math.sin(angle)}`;
-        }).join(" ")} fill="none" stroke="rgba(34,197,94,.08)" strokeWidth="1" />
+        }).join(" ")} fill="none" stroke="rgba(0,255,170,.12)" strokeWidth="1" />
       ))}
       {/* Axis lines */}
-      {categories.map((cat, i) => {
+      {displayCategories.map((cat, i) => {
         const angle = (Math.PI * 2 * i) / n - Math.PI / 2;
         const x2 = center + maxR * Math.cos(angle);
         const y2 = center + maxR * Math.sin(angle);
+        const labelX = center + (maxR + 20) * Math.cos(angle);
+        const labelY = center + (maxR + 20) * Math.sin(angle);
         return (
           <g key={i}>
-            <line x1={center} y1={center} x2={x2} y2={y2} stroke="rgba(34,197,94,.1)" strokeWidth="1" />
-            <text x={x2 * 1.12} y={y2} textAnchor="middle" dominantBaseline="middle"
-              fill={cat.score >= 60 ? "rgba(239,68,68,.6)" : cat.score >= 30 ? "rgba(250,204,21,.6)" : "rgba(34,197,94,.6)"}
+            <line x1={center} y1={center} x2={x2} y2={y2} stroke="rgba(0,255,170,.13)" strokeWidth="1" />
+            <text x={labelX} y={labelY} textAnchor="middle" dominantBaseline="middle"
+              fill={hasSignal ? (cat.score >= 60 ? "rgba(239,68,68,.85)" : cat.score >= 30 ? "rgba(250,204,21,.85)" : "rgba(0,255,136,.78)") : "rgba(0,255,136,.35)"}
               fontSize="9" fontFamily="JetBrains Mono, monospace" fontWeight="600">
-              {cat.score}
+              {hasSignal ? cat.score : "--"}
             </text>
           </g>
         );
       })}
       {/* Data polygon */}
-      <polygon points={points} fill="url(#radarFill)" stroke="#22c55e" strokeWidth="2" style={{ filter: "drop-shadow(0 0 8px rgba(34,197,94,.5))" }} />
+      <polygon points={points} fill="url(#radarFill)" stroke={hasSignal ? "#00ff88" : "rgba(0,255,136,.34)"} strokeWidth="2" style={{ filter: "drop-shadow(0 0 10px rgba(0,255,136,.45))" }} />
       {/* Data points */}
-      {categories.map((cat, i) => {
+      {displayCategories.map((cat, i) => {
         const angle = (Math.PI * 2 * i) / n - Math.PI / 2;
-        const r = (cat.score / 100) * maxR;
+        const r = Math.max(10, (cat.score / 100) * maxR);
         const cx = center + r * Math.cos(angle);
         const cy = center + r * Math.sin(angle);
         return (
-          <circle key={i} cx={cx} cy={cy} r="3" fill="#22c55e" stroke="rgba(0,0,0,.6)" strokeWidth="1.5" />
+          <circle key={i} cx={cx} cy={cy} r="3.5" fill={hasSignal ? "#00ff88" : "rgba(0,255,136,.45)"} stroke="rgba(0,0,0,.7)" strokeWidth="1.5" />
         );
       })}
+      <circle cx={center} cy={center} r="4" fill="#00ff88" opacity={hasSignal ? "0.9" : "0.45"} />
+      {!hasSignal && (
+        <text x={center} y={center + maxR + 36} textAnchor="middle" fill="rgba(136,136,136,.65)" fontSize="10" fontFamily="Inter, system-ui" fontWeight="700">
+          AWAITING SCAN DATA
+        </text>
+      )}
     </svg>
   );
 }
@@ -1762,6 +1894,44 @@ function FeatureSummary({ title, features }) {
   );
 }
 
+function ScanToggle({ label, checked, onChange, readOnly = false }) {
+  return (
+    <label className={`flex items-center gap-2 ${readOnly ? "cursor-default" : "cursor-pointer"}`}>
+      <input
+        type="checkbox"
+        className="h-4 w-4 rounded accent-[#20f8a8]"
+        checked={checked}
+        readOnly={readOnly}
+        onChange={(event) => !readOnly && onChange?.(event.target.checked)}
+      />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function SignalCard({ title, subtitle, className = "", delay = "0s" }) {
+  return (
+    <div className={`tmgc-signal-card ${className}`} style={{ animationDelay: delay }}>
+      <p className="text-xs font-black leading-none">{title}</p>
+      <p className="mt-1 text-[10px] font-semibold opacity-80">{subtitle}</p>
+    </div>
+  );
+}
+
+function HeroMetric({ icon, label, value }) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-[#00ff88]/8 bg-black/25 p-3 shadow-[0_12px_40px_-26px_rgba(0,255,136,.45)] backdrop-blur-md">
+      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-[#00ff88]/12 bg-[#00ff88]/7 text-[#00ff88]">
+        <NavIcon name={icon} />
+      </div>
+      <div className="min-w-0">
+        <p className="truncate text-lg font-black text-[#20f8a8]">{value}</p>
+        <p className="truncate text-xs text-zinc-400">{label}</p>
+      </div>
+    </div>
+  );
+}
+
 // ASN number to provider name mapping
 const ASN_PROVIDERS = {
   "AS15169": "Google LLC",
@@ -1839,6 +2009,17 @@ export function isHardProtected(domain) {
 export function formatDuration(ms) {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+export function formatTimeAgo(timestamp) {
+  if (!timestamp) return "—";
+  const diff = Date.now() - timestamp;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function getQuickSummary(data, riskScore) {

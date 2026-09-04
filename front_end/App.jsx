@@ -1,6 +1,8 @@
 import React, { useMemo, useRef, useState } from "react";
 import PremiumDashboard, { getTrustScore } from "./PremiumDashboard.jsx";
 import { RAW_TABS } from "./dashboardShared.jsx";
+import CyberGlobe from "./CyberGlobe.jsx";
+import { CyberStyles } from "./cyberTheme.jsx";
 
 const isDev = import.meta.env.DEV;
 
@@ -55,6 +57,7 @@ const NAV_ITEMS = [
   { id: "cnn-analysis", label: "CNN Visual Analysis", icon: "visual" },
   { id: "gnn-analysis", label: "GNN Graph Analysis", icon: "graph" },
   { id: "transformer-ensemble", label: "Transformer Ensemble", icon: "ensemble" },
+  { id: "security-alerts", label: "Security Alerts", icon: "alert" },
   { id: "reports", label: "Reports", icon: "report" },
   { id: "saved-scans", label: "Saved Scans", icon: "bookmark" },
   { id: "settings", label: "Settings", icon: "settings" },
@@ -83,6 +86,14 @@ function App() {
   const [aiReport, setAiReport] = useState(null);
   const [loadingAI, setLoadingAI] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [scanHistory, setScanHistory] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("tmgc_scan_history") || "[]");
+    } catch {
+      return [];
+    }
+  });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deepScan, setDeepScan] = useState(true);
   const [scanMeta, setScanMeta] = useState({ startedAt: null, completedAt: null, durationMs: null });
@@ -198,6 +209,17 @@ function App() {
         ">> AI CORE VERDICT RECEIVED.",
         `>> RISK SCORE LOCKED: ${payload.risk_score}/100`,
       ]);
+      const historyEntry = {
+        domain: payload.domain || cleanTarget,
+        risk_score: payload.risk_score || 0,
+        findings: payload.findings || [],
+        completedAt: Date.now(),
+      };
+      setScanHistory((current) => {
+        const next = [historyEntry, ...current.filter((s) => s.domain !== historyEntry.domain)].slice(0, 20);
+        localStorage.setItem("tmgc_scan_history", JSON.stringify(next));
+        return next;
+      });
       // Auto-trigger detailed AI analysis after scan completes
       const autoRawContext = payload.raw_context || "";
       setTimeout(() => {
@@ -587,6 +609,24 @@ throw new Error(
     );
   }
 }
+  function exportJson() {
+    if (!data) return;
+    const payload = {
+      domain: data.domain,
+      risk_score: data.risk_score,
+      ip_address: data.ip_address,
+      parsed_meta: data.parsed_meta,
+      findings: data.findings,
+      score_components: data.score_components,
+      ml_result: data.ml_result,
+      security_headers: data.security_header_details,
+      raw_logs: data.raw_logs,
+      ai_verdict: data.ai_verdict,
+      generated_at: new Date().toISOString(),
+    };
+    downloadBlob(`forensic_report_${data.domain}.json`, JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
+  }
+
   function exportRawTxt() {
     if (!data) return;
     const body = RAW_TABS.map((key) => {
@@ -732,6 +772,10 @@ ${commands}
       currentView={currentView}
       exportOpen={exportOpen}
       setExportOpen={setExportOpen}
+      reportModalOpen={reportModalOpen}
+      setReportModalOpen={setReportModalOpen}
+      scanHistory={scanHistory}
+      exportJson={exportJson}
       sidebarOpen={sidebarOpen}
       setSidebarOpen={setSidebarOpen}
       scanMeta={scanMeta}
@@ -849,69 +893,122 @@ function AuthScreen({ onAuthenticated }) {
   }
 
   return (
-    <main className="min-h-screen bg-[#030303] px-4 py-8 text-zinc-300">
-      <section className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-5xl items-center justify-center">
-        <div className="grid w-full overflow-hidden rounded-2xl border border-green-900/40 bg-[#050505] shadow-[0_0_60px_rgba(34,197,94,.08)] md:grid-cols-[0.9fr_1.1fr]">
-          <div className="border-b border-green-900/30 bg-[#030303] p-6 md:border-b-0 md:border-r">
-            <div className="flex items-center gap-2">
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-green-500/40 bg-green-500/10 text-lg font-black text-green-400">T</div>
-              <div>
-                <p className="text-lg font-extrabold text-green-400">TMGC</p>
-                <p className="text-[10px] font-semibold tracking-[0.2em] text-green-800">FORENSIC PIPELINE</p>
-              </div>
-            </div>
-            <h1 className="mt-6 text-3xl font-black text-white">Threat Intelligence Console</h1>
-            <p className="mt-4 text-sm leading-7 text-zinc-500">
-              Sign in to run domain checks with security headers, XGBoost ML, and AI-assisted analysis in one score.
-            </p>
-            <div className="mt-8 grid gap-3 text-xs text-zinc-600">
-              <div className="rounded-lg border border-green-950/50 bg-black/40 p-3">HYBRID_SCORE = HEADERS + ML + AI + RULES</div>
-              <div className="rounded-lg border border-green-950/50 bg-black/40 p-3">PHISHING OR SUSPICIOUS = HIGH RISK FLOOR</div>
-              <div className="rounded-lg border border-green-950/50 bg-black/40 p-3">PREMIUM SOC DASHBOARD</div>
+    <main className="relative min-h-screen overflow-hidden bg-[#0a0a0a] text-zinc-300">
+      <CyberStyles />
+      <div className="tmgc-hero-gradient pointer-events-none absolute inset-0" />
+      <div className="tmgc-grid-bg pointer-events-none absolute inset-0 opacity-40" />
+
+      <section className="relative mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-6 lg:flex-row lg:items-center lg:gap-8 lg:px-8">
+        {/* Hero + 3D Globe */}
+        <div className="flex flex-1 flex-col items-center lg:items-start" style={{ animation: "tmgc-fade-in 0.8s ease" }}>
+          <div className="mb-6 flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-[#00ff88]/40 bg-[#00ff88]/10 text-xl font-black text-[#00ff88] shadow-[0_0_30px_rgba(0,255,136,.25)]">T</div>
+            <div>
+              <p className="text-xl font-extrabold tracking-wide text-[#00ff88]">TMGC</p>
+              <p className="text-[9px] font-semibold tracking-[0.3em] text-[#00ff88]/50 uppercase">Forensic Pipeline</p>
             </div>
           </div>
 
-          <form className="p-6" onSubmit={submit}>
-            <p className="mb-6 text-xs font-bold tracking-[0.2em] text-green-700">SECURE ACCESS</p>
-            <div className="mb-6 grid grid-cols-2 overflow-hidden rounded-lg border border-green-900/40">
-              <button type="button" className={`px-4 py-3 text-sm font-semibold ${mode === "login" ? "bg-green-500/20 text-green-400" : "text-zinc-500"}`} onClick={() => setMode("login")}>
-                LOGIN
-              </button>
-              <button type="button" className={`px-4 py-3 text-sm font-semibold ${mode === "signup" ? "bg-green-500/20 text-green-400" : "text-zinc-500"}`} onClick={() => setMode("signup")}>
-                SIGNUP
-              </button>
-            </div>
+          <h1 className="max-w-lg text-center text-4xl font-black leading-tight tracking-tight text-white lg:text-left lg:text-5xl">
+            Detect.{" "}
+            <span className="bg-gradient-to-r from-[#00ff88] to-[#00ccaa] bg-clip-text text-transparent">Investigate.</span>{" "}
+            Stay Ahead.
+          </h1>
+          <p className="mt-4 max-w-md text-center text-sm leading-relaxed text-zinc-500 lg:text-left">
+            Real-time domain threat analysis powered by machine learning, DNS forensics, and AI-driven intelligence. Scan any URL in seconds and get actionable security insights.
+          </p>
 
-            {mode === "signup" && (
-              <AuthInput label="NAME" value={form.name} onChange={(value) => update("name", value)} autoComplete="name" />
-            )}
-            <AuthInput label="EMAIL" type="email" value={form.email} onChange={(value) => update("email", value)} autoComplete="email" />
-            <AuthInput label="PASSWORD" type="password" value={form.password} onChange={(value) => update("password", value)} autoComplete={mode === "login" ? "current-password" : "new-password"} />
-            {mode === "signup" && (
-              <AuthInput label="CONFIRM PASSWORD" type="password" value={form.confirm} onChange={(value) => update("confirm", value)} autoComplete="new-password" />
-            )}
+          <div className="relative my-8 flex justify-center lg:justify-start">
+            <CyberGlobe size={360} className="mx-auto" />
+          </div>
 
-            {error && <div className="mb-4 rounded-lg border border-red-500/40 bg-red-950/20 p-3 text-sm text-red-300">{error}</div>}
-            <button className="w-full rounded-lg border border-green-500/60 bg-green-500/10 px-4 py-3 font-bold text-green-400 transition hover:bg-green-500/20">
-              {mode === "login" ? "ENTER CONSOLE" : "CREATE ACCOUNT"}
+          <div className="mb-6 flex flex-wrap justify-center gap-3 lg:justify-start">
+            <button
+              type="button"
+              className="tmgc-btn-primary rounded-lg px-6 py-3 text-sm font-semibold"
+              onClick={() => { setMode("signup"); document.getElementById("auth-form")?.scrollIntoView({ behavior: "smooth", block: "center" }); }}
+            >
+              Get Started →
             </button>
-          </form>
+            <button
+              type="button"
+              className="rounded-lg border border-white/20 bg-transparent px-6 py-3 text-sm font-semibold text-zinc-300 transition hover:border-[#00ff88]/40 hover:text-white"
+              onClick={() => document.getElementById("auth-form")?.scrollIntoView({ behavior: "smooth", block: "center" })}
+            >
+              Learn More
+            </button>
+          </div>
+
+          <div className="grid w-full max-w-lg grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              { val: "2.1M+", label: "Domains Analyzed" },
+              { val: "99.2%", label: "Detection Rate" },
+              { val: "<3s", label: "Avg Scan Time" },
+              { val: "24/7", label: "Threat Monitoring" },
+            ].map((s) => (
+              <div key={s.label} className="rounded-lg border border-[#00ff88]/10 bg-black/30 px-3 py-3 text-center backdrop-blur-sm">
+                <p className="text-lg font-extrabold text-[#00ff88]">{s.val}</p>
+                <p className="mt-0.5 text-[9px] font-medium tracking-wide text-zinc-600 uppercase">{s.label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Auth Form */}
+        <div id="auth-form" className="mt-8 w-full max-w-md shrink-0 lg:mt-0" style={{ animation: "tmgc-slide-up 0.8s ease 0.2s both" }}>
+          <div className="overflow-hidden rounded-2xl border border-[#00ff88]/15 bg-[#0c0c0c]/90 shadow-[0_0_60px_rgba(0,255,136,.06)] backdrop-blur-xl">
+            <form className="p-7" onSubmit={submit}>
+              <p className="mb-1 text-lg font-bold text-white">{mode === "login" ? "Welcome Back" : "Create Account"}</p>
+              <p className="mb-6 text-xs text-zinc-500">
+                {mode === "login" ? "Sign in to access your forensic dashboard" : "Join the threat intelligence platform"}
+              </p>
+
+              <div className="mb-6 grid grid-cols-2 overflow-hidden rounded-lg border border-[#00ff88]/15">
+                <button type="button" className={`px-4 py-2.5 text-sm font-semibold transition ${mode === "login" ? "bg-[#00ff88]/15 text-[#00ff88]" : "text-zinc-500 hover:text-zinc-400"}`} onClick={() => setMode("login")}>
+                  Sign In
+                </button>
+                <button type="button" className={`px-4 py-2.5 text-sm font-semibold transition ${mode === "signup" ? "bg-[#00ff88]/15 text-[#00ff88]" : "text-zinc-500 hover:text-zinc-400"}`} onClick={() => setMode("signup")}>
+                  Sign Up
+                </button>
+              </div>
+
+              {mode === "signup" && (
+                <AuthInput label="Full Name" value={form.name} onChange={(value) => update("name", value)} autoComplete="name" placeholder="Security Analyst" />
+              )}
+              <AuthInput label="Email Address" type="email" value={form.email} onChange={(value) => update("email", value)} autoComplete="email" placeholder="analyst@company.com" />
+              <AuthInput label="Password" type="password" value={form.password} onChange={(value) => update("password", value)} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="Min. 8 characters" />
+              {mode === "signup" && (
+                <AuthInput label="Confirm Password" type="password" value={form.confirm} onChange={(value) => update("confirm", value)} autoComplete="new-password" placeholder="Re-enter password" />
+              )}
+
+              {error && <div className="mb-4 rounded-lg border border-red-500/30 bg-red-950/20 px-4 py-3 text-sm text-red-300">{error}</div>}
+
+              <button type="submit" className="tmgc-btn-primary w-full rounded-lg px-4 py-3.5 text-sm tracking-wide">
+                {mode === "login" ? "Launch Dashboard →" : "Get Started →"}
+              </button>
+
+              <p className="mt-4 text-center text-[10px] text-zinc-600">
+                Protected by end-to-end encryption · Your data stays local
+              </p>
+            </form>
+          </div>
         </div>
       </section>
     </main>
   );
 }
 
-function AuthInput({ label, value, onChange, type = "text", autoComplete }) {
+function AuthInput({ label, value, onChange, type = "text", autoComplete, placeholder }) {
   return (
     <label className="mb-4 block">
-      <span className="mb-2 block text-xs font-bold tracking-[0.2em] text-green-800">{label}</span>
+      <span className="mb-1.5 block text-xs font-semibold text-zinc-400">{label}</span>
       <input
-        className="w-full rounded-lg border border-green-900/50 bg-black/60 px-3 py-3 text-green-100 outline-none focus:border-green-500/50"
+        className="w-full rounded-lg border border-[#00ff88]/12 bg-black/50 px-4 py-3 text-sm text-zinc-200 outline-none transition placeholder:text-zinc-700 focus:border-[#00ff88]/40 focus:shadow-[0_0_20px_rgba(0,255,136,.08)]"
         type={type}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         autoComplete={autoComplete}
+        placeholder={placeholder}
       />
     </label>
   );

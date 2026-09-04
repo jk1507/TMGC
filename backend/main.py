@@ -3966,6 +3966,27 @@ if MISP_OTX_AVAILABLE:
         result = query_all_threat_intel(domain=domain, ip=ip)
         return result
 
+# --- Live Global Threat Map (PhishTank geolocation) ---
+try:
+    from global_threat_map import build_snapshot
+    GLOBAL_THREAT_MAP_AVAILABLE = True
+except Exception:
+    GLOBAL_THREAT_MAP_AVAILABLE = False
+
+
+@app.get("/api/v1/global-threat-map")
+async def global_threat_map_endpoint() -> dict:
+    """Live global phishing activity: per-country hotspots + attack types."""
+    if not GLOBAL_THREAT_MAP_AVAILABLE:
+        return {"source": "error", "error": "global_threat_map module unavailable",
+                "total_attacks": 0, "countries": [], "types": [], "recent": []}
+    try:
+        return build_snapshot()
+    except Exception as exc:
+        return {"source": "error", "error": str(exc),
+                "total_attacks": 0, "countries": [], "types": [], "recent": []}
+
+
 # --- Sandbox Analysis ---
 if SANDBOX_ANALYSIS_AVAILABLE:
     @app.post("/api/v1/sandbox")
