@@ -1,0 +1,600 @@
+{
+  "domain": "gitamedu.com",
+  "ip_address": "103.131.24.110",
+  "parsed_meta": {
+    "hosting_space": "N/A",
+    "domain_age": "N/A",
+    "created_date": "N/A",
+    "asn": "N/A",
+    "country": "N/A",
+    "http_status": 200,
+    "ssl_issuer": "YR1",
+    "registrar": "N/A"
+  },
+  "security_headers": {
+    "Strict-Transport-Security": false,
+    "Content-Security-Policy": false,
+    "Content-Security-Policy-Report-Only": false,
+    "X-Frame-Options": false,
+    "X-XSS-Protection": false,
+    "X-Content-Type-Options": false,
+    "Referrer-Policy": false,
+    "Permissions-Policy": false,
+    "Cross-Origin-Embedder-Policy": false,
+    "Cross-Origin-Opener-Policy": false,
+    "Cross-Origin-Resource-Policy": false
+  },
+  "security_header_details": [
+    {
+      "name": "Strict-Transport-Security",
+      "enabled": false,
+      "value": null,
+      "status": "MISSING",
+      "strength": "MISSING",
+      "effective": false,
+      "evidence": "Header not observed",
+      "recommendation": "Add HSTS on HTTPS responses after validating subdomain readiness.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "Content-Security-Policy",
+      "enabled": false,
+      "value": null,
+      "status": "MISSING",
+      "strength": "MISSING",
+      "effective": false,
+      "evidence": "Header not observed",
+      "recommendation": "Add an enforced CSP appropriate to the application.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "Content-Security-Policy-Report-Only",
+      "enabled": false,
+      "value": null,
+      "status": "OPTIONAL",
+      "strength": "OPTIONAL",
+      "effective": false,
+      "evidence": "Header not observed",
+      "recommendation": "Optional: add report-only CSP while tuning a future enforced policy.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "X-Frame-Options",
+      "enabled": false,
+      "value": null,
+      "status": "MISSING",
+      "strength": "MISSING",
+      "effective": false,
+      "evidence": "Header not observed",
+      "recommendation": "Add X-Frame-Options or CSP frame-ancestors for clickjacking defense.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "X-XSS-Protection",
+      "enabled": false,
+      "value": null,
+      "status": "DEPRECATED",
+      "strength": "DEPRECATED",
+      "effective": false,
+      "evidence": "Header is deprecated and absence is not a modern security failure",
+      "recommendation": "Rely on CSP and output encoding; do not use this as a positive security signal.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "X-Content-Type-Options",
+      "enabled": false,
+      "value": null,
+      "status": "MISSING",
+      "strength": "MISSING",
+      "effective": false,
+      "evidence": "Header not observed",
+      "recommendation": "Set X-Content-Type-Options: nosniff.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "Referrer-Policy",
+      "enabled": false,
+      "value": null,
+      "status": "MISSING",
+      "strength": "MISSING",
+      "effective": false,
+      "evidence": "Header not observed",
+      "recommendation": "Prefer strict-origin-when-cross-origin or stricter.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "Permissions-Policy",
+      "enabled": false,
+      "value": null,
+      "status": "OPTIONAL",
+      "strength": "OPTIONAL",
+      "effective": false,
+      "evidence": "Context-dependent isolation/privacy header not observed",
+      "recommendation": "Optional for many sites; enable when isolation or policy control is required.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "Cross-Origin-Embedder-Policy",
+      "enabled": false,
+      "value": null,
+      "status": "OPTIONAL",
+      "strength": "OPTIONAL",
+      "effective": false,
+      "evidence": "Context-dependent isolation/privacy header not observed",
+      "recommendation": "Optional for many sites; enable when isolation or policy control is required.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "Cross-Origin-Opener-Policy",
+      "enabled": false,
+      "value": null,
+      "status": "OPTIONAL",
+      "strength": "OPTIONAL",
+      "effective": false,
+      "evidence": "Context-dependent isolation/privacy header not observed",
+      "recommendation": "Optional for many sites; enable when isolation or policy control is required.",
+      "redirect_index": null,
+      "source_url": null
+    },
+    {
+      "name": "Cross-Origin-Resource-Policy",
+      "enabled": false,
+      "value": null,
+      "status": "OPTIONAL",
+      "strength": "OPTIONAL",
+      "effective": false,
+      "evidence": "Context-dependent isolation/privacy header not observed",
+      "recommendation": "Optional for many sites; enable when isolation or policy control is required.",
+      "redirect_index": null,
+      "source_url": null
+    }
+  ],
+  "open_ports": [],
+  "dns_data": {
+    "mx_records": [
+      "0 gitamedu.com."
+    ],
+    "nameservers": [],
+    "a_records": [
+      "103.131.24.110"
+    ]
+  },
+  "raw_logs": {
+    "dig": "103.131.24.110",
+    "mx": "0 gitamedu.com.",
+    "ip_whois": "Required command 'whois' is not installed or not on PATH. (Fallback failed: )",
+    "domain_whois": "Required command 'whois' is not installed or not on PATH. (Fallback failed: )",
+    "ssl": "issuer=CN=YR1, O=Let's Encrypt\nnotBefore=Aug 19 06:05:37 2026 GMT\nnotAfter=Nov 17 06:05:36 2026 GMT",
+    "curl": "HTTP/1.1 200 OK\nDate: Fri, 04 Sep 2026 14:22:22 GMT\nServer: Apache\nX-Powered-By: PHP/7.4.33\nConnection: close\nTransfer-Encoding: chunked\nContent-Type: text/html; charset=UTF-8",
+    "nc": "Required command 'nc' is not installed or not on PATH. (Fallback failed: )",
+    "ping": "Connection timed out or command exceeded 2s."
+  },
+  "findings": [
+    "INFO: Domain creation date unavailable - WHOIS lookup could not retrieve registration date. Tool failure is not domain risk.",
+    "INFO: ASN was unavailable from IP WHOIS (infrastructure confirmed via SSL + HTTP).",
+    "INFO: Country/region was unavailable from IP WHOIS (infrastructure confirmed via SSL + HTTP).",
+    "INFO: Registrar was unavailable from domain WHOIS (infrastructure confirmed via SSL + HTTP).",
+    "SUSPICIOUS: Domain label contains 'edu' but TLD is not .edu \u00e2\u20ac\u201d may impersonate educational institution.",
+    "LOW RISK: HSTS missing. HTTPS downgrade protection unavailable.",
+    "LOW RISK: Missing CSP slightly increases XSS exposure.",
+    "LOW RISK: Missing clickjacking protection.",
+    "INFO: X-XSS-Protection is deprecated and excluded from positive/negative risk scoring.",
+    "INFO: WHOIS data unavailable \u2014 Required command 'whois' is not installed or not on PATH. (Fallback failed: )",
+    "SECURITY HEADER: Strict-Transport-Security is missing (Add HSTS on HTTPS responses after validating subdomain readiness.).",
+    "SECURITY HEADER: Content-Security-Policy is missing (Add an enforced CSP appropriate to the application.).",
+    "SECURITY HEADER: X-Frame-Options is missing (Add X-Frame-Options or CSP frame-ancestors for clickjacking defense.).",
+    "SECURITY HEADER: X-Content-Type-Options is missing (Set X-Content-Type-Options: nosniff.).",
+    "SECURITY HEADER: Referrer-Policy is missing (Prefer strict-origin-when-cross-origin or stricter.).",
+    "LOW RISK: No SPF record found \u2014 domain may be vulnerable to email spoofing.",
+    "LOW RISK: No DKIM signature detected \u2014 email authenticity not cryptographically signed.",
+    "LOW RISK: No DMARC policy found \u2014 domain may be vulnerable to domain spoofing.",
+    "ENTITY ATTRIBUTION: No Ownership Evidence. A GitHub or social media account with a similar name may exist, but no verified relationship between the account and this domain was discovered.",
+    "INFO: Browser automation completed successfully (?s).",
+    "ENSEMBLE ML: 4 model(s) voted \u2014 Score: 22.0/100, Verdict: UNCERTAIN, Model Agreement: 25%",
+    "AI OVERRIDE GUARD: ML model indicates legitimate (2%) with low heuristic evidence (23). AI score capped from 30 to 5 to prevent AI hallucination from distorting the verdict.",
+    "SECURITY POSTURE: Missing critical security headers (header score=15) \u2014 adding +8 risk.",
+    "SECURITY FLOOR: All critical security headers (HSTS, CSP, X-Frame-Options) are missing \u2014 minimum score floor of 6 applied. Age and registrar trust cannot fully suppress missing protections.",
+    "TRUST: Valid SSL/TLS certificate present (-5 risk).",
+    "CONFIDENCE: ENSEMBLE MATH: Shannon entropy is high (0.759 bits) \u2014 models disagree, lowering confidence.",
+    "CONFIDENCE: ENSEMBLE MATH: KL divergence is negligible \u2014 strong model consensus.",
+    "CONFIDENCE: ENSEMBLE MATH: Beta 95% credible interval is wide (0.683) \u2014 Bayesian posterior uncertainty.",
+    "CONFIDENCE: ENSEMBLE MATH: Cohen's \u03ba=1.00 \u2014 excellent inter-model agreement beyond chance.",
+    "CONFIDENCE: ENSEMBLE MATH: Bayes factor=853.5 \u2014 strong evidence favoring the best model.",
+    "HYBRID SCORING: Base=12, Trust=-5, Penalty=+0, Final=15/100",
+    "CONFIDENCE: Medium (76%)",
+    "ML ANALYSIS: XGBoost flags domain as LEGITIMATE (score: 2.3/100)"
+  ],
+  "ai_verdict": "# RETRO_INTEL Hybrid Threat Report: gitamedu.com\n\n## Executive Severity\nLOW RISK (Hybrid Score: 15/100)\n\n## Machine Learning Classifier (XGBoost)\n- **Verdict**: LEGITIMATE\n- **Model Score**: 2.3/100\n- **Status**: ACTIVE\n- **Final Hybrid Score**: 15/100\n\n---\n\n```markdown\n# SOC Report\n\n## Threat Summary\n- **Domain Label**: Contains 'edu' but TLD is not .edu, may impersonate educational institution.\n- **CSP Missing**: Slightly increases XSS exposure.\n- **HSTS Missing**: HTTPS downgrade protection unavailable.\n- **X-XSS-Protection Deprecated**: No risk score as it is deprecated.\n\n## Risk Assessment\n- **Domain Label Impersonation**: Low risk, as the domain label 'edu' is commonly used for educational institutions.\n- **CSP Missing**: Moderate risk, as it slightly increases XSS exposure.\n- **HSTS Missing**: Low risk, as HTTPS downgrade protection is unavailable.\n- **X-XSS-Protection Deprecated**: Low risk, as it is deprecated and no longer actively used.\n\n## MITRE ATT&CK Mapping\n- **Domain Label Impersonation**: T1126 - Domain Backdoors\n- **CSP Missing**: T1133 - Cross-Site Scripting\n- **HSTS Missing**: T1134 - HTTP Request Smuggling\n- **X-XSS-Protection Deprecated**: T1133 - Cross-Site Scripting\n\n## IOC Analysis\n- **Domain**: gitamedu.com\n- **IP**: 103.131.24.110\n- **DNS Records**: MX record found, no A records.\n- **HTTP Response**: 200 OK, no CSP, no HSTS, no X-XSS-Protection, no clickjacking protection.\n\n## False Positive Discussion\n- **Domain Label**: The presence of 'edu' in the domain label may indicate an educational institution, which is a low-confidence indicator.\n- **CSP Missing**: The absence of Content Security Policy slightly increases the risk of XSS attacks.\n- **HSTS Missing**: The absence of HTTP Strict Transport Security does not pose a significant risk as HTTPS downgrade protection is unavailable.\n- **X-XSS-Protection Deprecated**: The deprecated X-XSS-Protection does not indicate a current threat but is a low-confidence indicator.\n\n## Analyst Notes\n- The domain label 'edu' is commonly used for educational institutions, which may indicate a potential impersonation. However, the absence of HSTS and the deprecated X-XSS-Protection are low-confidence indicators. The presence of a CSP slightly increases the risk of XSS attacks, but the absence of HSTS and the deprecated X-XSS-Protection mitigates this risk.\n\n## Confidence Score\n**Confidence Score**: 30\n\n## Recommended Action\n- **Monitor**: Monitor the domain for any suspicious activity or changes in DNS records.\n- **Review**: Review the domain for any recent activity or changes in the domain's configuration.\n- **Block**: Consider blocking the domain for further investigation or to prevent potential impersonation.\n\nRISK_SCORE: 30\n```",
+  "risk_score": 15,
+  "commands": {
+    "dig": {
+      "name": "dig",
+      "command": [
+        "dig",
+        "gitamedu.com",
+        "A",
+        "+short"
+      ],
+      "status": "ok",
+      "stdout": "103.131.24.110",
+      "stderr": "",
+      "returncode": 0,
+      "error": null
+    },
+    "mx": {
+      "name": "mx",
+      "command": [
+        "dig",
+        "gitamedu.com",
+        "MX",
+        "+short"
+      ],
+      "status": "ok",
+      "stdout": "0 gitamedu.com.",
+      "stderr": "",
+      "returncode": 0,
+      "error": null
+    },
+    "ip_whois": {
+      "name": "ip_whois",
+      "command": [
+        "whois",
+        "103.131.24.110"
+      ],
+      "status": "failed_lookup",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 1,
+      "error": "Required command 'whois' is not installed or not on PATH. (Fallback failed: )"
+    },
+    "domain_whois": {
+      "name": "domain_whois",
+      "command": [
+        "whois",
+        "gitamedu.com"
+      ],
+      "status": "failed_lookup",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 1,
+      "error": "Required command 'whois' is not installed or not on PATH. (Fallback failed: )"
+    },
+    "ssl": {
+      "name": "ssl",
+      "command": [
+        "python",
+        "fallback_ssl_probe",
+        "gitamedu.com"
+      ],
+      "status": "ok",
+      "stdout": "issuer=CN=YR1, O=Let's Encrypt\nnotBefore=Aug 19 06:05:37 2026 GMT\nnotAfter=Nov 17 06:05:36 2026 GMT",
+      "stderr": "",
+      "returncode": 0,
+      "error": null
+    },
+    "curl": {
+      "name": "curl",
+      "command": [
+        "stealth_curl",
+        "gitamedu.com"
+      ],
+      "status": "ok",
+      "stdout": "HTTP/1.1 200 OK\nDate: Fri, 04 Sep 2026 14:22:22 GMT\nServer: Apache\nX-Powered-By: PHP/7.4.33\nConnection: close\nTransfer-Encoding: chunked\nContent-Type: text/html; charset=UTF-8",
+      "stderr": "",
+      "returncode": 0,
+      "error": null
+    },
+    "nc": {
+      "name": "nc",
+      "command": [
+        "nc",
+        "-zv",
+        "-w",
+        "2",
+        "gitamedu.com",
+        "22",
+        "80",
+        "443",
+        "8080",
+        "8443"
+      ],
+      "status": "failed_lookup",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 1,
+      "error": "Required command 'nc' is not installed or not on PATH. (Fallback failed: )"
+    },
+    "ping": {
+      "name": "ping",
+      "command": [
+        "ping",
+        "-n",
+        "3",
+        "gitamedu.com"
+      ],
+      "status": "timeout",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 1,
+      "error": "Connection timed out or command exceeded 2s."
+    }
+  },
+  "raw_context": "TARGET_DOMAIN: gitamedu.com\nPRIMARY_IPV4: 103.131.24.110\nPARSED_META: {'hosting_space': 'N/A', 'domain_age': 'N/A', 'created_date': 'N/A', 'asn': 'N/A', 'country': 'N/A', 'http_status': 200, 'ssl_issuer': 'YR1', 'registrar': 'N/A'}\nSECURITY_HEADERS: {'Strict-Transport-Security': False, 'Content-Security-Policy': False, 'Content-Security-Policy-Report-Only': False, 'X-Frame-Options': False, 'X-XSS-Protection': False, 'X-Content-Type-Options': False, 'Referrer-Policy': False, 'Permissions-Policy': False, 'Cross-Origin-Embedder-Policy': False, 'Cross-Origin-Opener-Policy': False, 'Cross-Origin-Resource-Policy': False}\nOPEN_PORTS: []\nDNS_DATA: {'mx_records': ['0 gitamedu.com.'], 'nameservers': [], 'a_records': ['103.131.24.110']}\nWEBSITE_ANALYSIS: {'available': True, 'source': 'live', 'start_url': 'https://gitamedu.com/', 'final_url': 'https://gitamedu.com/', 'status': 200, 'content_type': 'text/html', 'redirect_chain': [], 'truncated': False, 'bytes_read': 227518, 'signals': {'title': 'GITAM Deemed to be University | Multidisciplinary Education &amp; Research', 'has_form': True, 'has_password_input': False, 'has_email_input': False, 'has_otp_keywords': False, 'external_form_actions': [], 'linked_host_count': 333, 'external_linked_host_count': 43, 'same_host_asset_ratio': 0.8709}, 'text_sample': 'gitam deemed to be university | multidisciplinary education &amp; research information for: aspiring students campus life alumni faculty entrepreneurship faqs careers employee login parent login student login payments employee login parent login student login payments about us about gitam campus life bengaluru visakhapatnam hyderabad gimsr faculty leadership accreditation approvals nirf sustainable development policies climate action sustainable procurement sustainable investment net zero commitment equality, diversity and inclusiveness committee for differently abled equal opportunity cell women empowerment cell feedback itep (ncte) academics bengaluru engineering humanities and social sciences management science hyderabad architecture education engineering humanities and social sciences management pharmacy public policy science visakhapatnam architecture engineering humanities and social sciences law management pharmacy science liberal education performing arts blended learning curriculum and syllabus evaluation applications &amp; fee structure apply for certificates apply for examinations annual reports cgpa to percentage conversion certificate evaluation contact redressal of gr'}\nFINDINGS:\n- INFO: Domain creation date unavailable - WHOIS lookup could not retrieve registration date. Tool failure is not domain risk.\n- INFO: ASN was unavailable from IP WHOIS (infrastructure confirmed via SSL + HTTP).\n- INFO: Country/region was unavailable from IP WHOIS (infrastructure confirmed via SSL + HTTP).\n- INFO: Registrar was unavailable from domain WHOIS (infrastructure confirmed via SSL + HTTP).\n- SUSPICIOUS: Domain label contains 'edu' but TLD is not .edu \u00e2\u20ac\u201d may impersonate educational institution.\n- LOW RISK: HSTS missing. HTTPS downgrade protection unavailable.\n- LOW RISK: Missing CSP slightly increases XSS exposure.\n- LOW RISK: Missing clickjacking protection.\n- INFO: X-XSS-Protection is deprecated and excluded from positive/negative risk scoring.\n\n===== DIG =====\nCOMMAND: dig gitamedu.com A +short\nSTATUS: ok\nSTDOUT:\n103.131.24.110\nSTDERR_OR_ERROR:\n<none>\n\n===== MX =====\nCOMMAND: dig gitamedu.com MX +short\nSTATUS: ok\nSTDOUT:\n0 gitamedu.com.\nSTDERR_OR_ERROR:\n<none>\n\n===== IP_WHOIS =====\nCOMMAND: whois 103.131.24.110\nSTATUS: failed_lookup\nSTDOUT:\n<empty>\nSTDERR_OR_ERROR:\nRequired command 'whois' is not installed or not on PATH. (Fallback failed: )\n\n===== DOMAIN_WHOIS =====\nCOMMAND: whois gitamedu.com\nSTATUS: failed_lookup\nSTDOUT:\n<empty>\nSTDERR_OR_ERROR:\nRequired command 'whois' is not installed or not on PATH. (Fallback failed: )\n\n===== SSL =====\nCOMMAND: python fallback_ssl_probe gitamedu.com\nSTATUS: ok\nSTDOUT:\nissuer=CN=YR1, O=Let's Encrypt\nnotBefore=Aug 19 06:05:37 2026 GMT\nnotAfter=Nov 17 06:05:36 2026 GMT\nSTDERR_OR_ERROR:\n<none>\n\n===== CURL =====\nCOMMAND: stealth_curl gitamedu.com\nSTATUS: ok\nSTDOUT:\nHTTP/1.1 200 OK\nDate: Fri, 04 Sep 2026 14:22:22 GMT\nServer: Apache\nX-Powered-By: PHP/7.4.33\nConnection: close\nTransfer-Encoding: chunked\nContent-Type: text/html; charset=UTF-8\nSTDERR_OR_ERROR:\n<none>\n\n===== NC =====\nCOMMAND: nc -zv -w 2 gitamedu.com 22 80 443 8080 8443\nSTATUS: failed_lookup\nSTDOUT:\n<empty>\nSTDERR_OR_ERROR:\nRequired command 'nc' is not installed or not on PATH. (Fallback failed: )\n\n===== PING =====\nCOMMAND: ping -n 3 gitamedu.com\nSTATUS: timeout\nSTDOUT:\n<empty>\nSTDERR_OR_ERROR:\nConnection timed out or command exceeded 2s.",
+  "partial_report": false,
+  "errors": [
+    "Required command 'whois' is not installed or not on PATH. (Fallback failed: )",
+    "Required command 'whois' is not installed or not on PATH. (Fallback failed: )",
+    "Required command 'nc' is not installed or not on PATH. (Fallback failed: )",
+    "Connection timed out or command exceeded 2s."
+  ],
+  "target_ip": "103.131.24.110",
+  "hosting_space": "N/A",
+  "country_code": "N/A",
+  "asn": "N/A",
+  "domain_age": "N/A",
+  "registrar": "N/A",
+  "ssl_issuer": "YR1",
+  "ssl_dates": {},
+  "final_http_status": 200,
+  "port_map": "",
+  "ai_markdown_report": "# RETRO_INTEL Hybrid Threat Report: gitamedu.com\n\n## Executive Severity\nLOW RISK (Hybrid Score: 15/100)\n\n## Machine Learning Classifier (XGBoost)\n- **Verdict**: LEGITIMATE\n- **Model Score**: 2.3/100\n- **Status**: ACTIVE\n- **Final Hybrid Score**: 15/100\n\n---\n\n```markdown\n# SOC Report\n\n## Threat Summary\n- **Domain Label**: Contains 'edu' but TLD is not .edu, may impersonate educational institution.\n- **CSP Missing**: Slightly increases XSS exposure.\n- **HSTS Missing**: HTTPS downgrade protection unavailable.\n- **X-XSS-Protection Deprecated**: No risk score as it is deprecated.\n\n## Risk Assessment\n- **Domain Label Impersonation**: Low risk, as the domain label 'edu' is commonly used for educational institutions.\n- **CSP Missing**: Moderate risk, as it slightly increases XSS exposure.\n- **HSTS Missing**: Low risk, as HTTPS downgrade protection is unavailable.\n- **X-XSS-Protection Deprecated**: Low risk, as it is deprecated and no longer actively used.\n\n## MITRE ATT&CK Mapping\n- **Domain Label Impersonation**: T1126 - Domain Backdoors\n- **CSP Missing**: T1133 - Cross-Site Scripting\n- **HSTS Missing**: T1134 - HTTP Request Smuggling\n- **X-XSS-Protection Deprecated**: T1133 - Cross-Site Scripting\n\n## IOC Analysis\n- **Domain**: gitamedu.com\n- **IP**: 103.131.24.110\n- **DNS Records**: MX record found, no A records.\n- **HTTP Response**: 200 OK, no CSP, no HSTS, no X-XSS-Protection, no clickjacking protection.\n\n## False Positive Discussion\n- **Domain Label**: The presence of 'edu' in the domain label may indicate an educational institution, which is a low-confidence indicator.\n- **CSP Missing**: The absence of Content Security Policy slightly increases the risk of XSS attacks.\n- **HSTS Missing**: The absence of HTTP Strict Transport Security does not pose a significant risk as HTTPS downgrade protection is unavailable.\n- **X-XSS-Protection Deprecated**: The deprecated X-XSS-Protection does not indicate a current threat but is a low-confidence indicator.\n\n## Analyst Notes\n- The domain label 'edu' is commonly used for educational institutions, which may indicate a potential impersonation. However, the absence of HSTS and the deprecated X-XSS-Protection are low-confidence indicators. The presence of a CSP slightly increases the risk of XSS attacks, but the absence of HSTS and the deprecated X-XSS-Protection mitigates this risk.\n\n## Confidence Score\n**Confidence Score**: 30\n\n## Recommended Action\n- **Monitor**: Monitor the domain for any suspicious activity or changes in DNS records.\n- **Review**: Review the domain for any recent activity or changes in the domain's configuration.\n- **Block**: Consider blocking the domain for further investigation or to prevent potential impersonation.\n\nRISK_SCORE: 30\n```",
+  "ml_result": {
+    "xgb_available": true,
+    "xgb_score": 2.3,
+    "xgb_verdict": "Legitimate",
+    "thresholds": {
+      "phishing": 97.5,
+      "suspicious": 70.2,
+      "uncertain": 38.6
+    },
+    "ml_inference_ms": 1.56,
+    "ml_feature_ms": 16.08
+  },
+  "score_components": {
+    "heuristic_analysis": 23,
+    "security_headers": 15,
+    "xgboost_ml": 2.3,
+    "ai_analysis": 5,
+    "signal_strength": {
+      "heuristic_analysis": "PRIMARY",
+      "security_headers": "SUPPORTING",
+      "xgboost_ml": "SUPPORTING",
+      "ai_analysis": "CONFIDENCE BOOST"
+    },
+    "final_score": 15,
+    "classification": "LOW RISK",
+    "classification_v2": "LOW RISK",
+    "classification_severity": "low",
+    "trust_bonuses": {
+      "valid_ssl": 5.0
+    },
+    "trust_bonus_total": 5.0,
+    "verified_org_bonus": 0.0,
+    "is_verified_org": false,
+    "phishing_penalties": {},
+    "phishing_penalty_total": 0.0,
+    "hybrid_breakdown": {
+      "weighted_heuristic": 8.0,
+      "weighted_headers": 3.0,
+      "weighted_xgboost_ml": 0.5,
+      "weighted_ai": 0.5,
+      "base_score": 12.0,
+      "trust_bonus_applied": -5.0,
+      "phishing_penalty_applied": 0.0,
+      "weights": {
+        "heuristics": 0.35,
+        "security_headers": 0.2,
+        "xgboost_ml": 0.2,
+        "domain_reputation": 0.15,
+        "ai_analysis": 0.1
+      }
+    },
+    "dynamic_confidence": {
+      "confidence_pct": 76,
+      "confidence_level": "Medium",
+      "reasoning": [
+        "ENSEMBLE MATH: Shannon entropy is high (0.759 bits) \u2014 models disagree, lowering confidence.",
+        "ENSEMBLE MATH: KL divergence is negligible \u2014 strong model consensus.",
+        "ENSEMBLE MATH: Beta 95% credible interval is wide (0.683) \u2014 Bayesian posterior uncertainty.",
+        "ENSEMBLE MATH: Cohen's \u03ba=1.00 \u2014 excellent inter-model agreement beyond chance.",
+        "ENSEMBLE MATH: Bayes factor=853.5 \u2014 strong evidence favoring the best model."
+      ]
+    },
+    "explainable_reasoning": [
+      "FINAL SCORE: 15/100 (LOW RISK)",
+      "  Weighted base: 12.0",
+      "  Trust bonuses: -5.0",
+      "  Phishing penalties: +0.0",
+      "  TRUST: Valid SSL/TLS certificate present (-5 risk)."
+    ]
+  },
+  "website_analysis": {
+    "available": true,
+    "source": "live",
+    "start_url": "https://gitamedu.com/",
+    "final_url": "https://gitamedu.com/",
+    "status": 200,
+    "content_type": "text/html",
+    "redirect_chain": [],
+    "truncated": false,
+    "bytes_read": 227518,
+    "signals": {
+      "title": "GITAM Deemed to be University | Multidisciplinary Education &amp; Research",
+      "has_form": true,
+      "has_password_input": false,
+      "has_email_input": false,
+      "has_otp_keywords": false,
+      "external_form_actions": [],
+      "linked_host_count": 333,
+      "external_linked_host_count": 43,
+      "same_host_asset_ratio": 0.8709
+    },
+    "text_sample": "gitam deemed to be university | multidisciplinary education &amp; research information for: aspiring students campus life alumni faculty entrepreneurship faqs careers employee login parent login student login payments employee login parent login student login payments about us about gitam campus life bengaluru visakhapatnam hyderabad gimsr faculty leadership accreditation approvals nirf sustainable development policies climate action sustainable procurement sustainable investment net zero commitment equality, diversity and inclusiveness committee for differently abled equal opportunity cell women empowerment cell feedback itep (ncte) academics bengaluru engineering humanities and social sciences management science hyderabad architecture education engineering humanities and social sciences management pharmacy public policy science visakhapatnam architecture engineering humanities and social sciences law management pharmacy science liberal education performing arts blended learning curriculum and syllabus evaluation applications &amp; fee structure apply for certificates apply for examinations annual reports cgpa to percentage conversion certificate evaluation contact redressal of gr"
+  },
+  "owner_image": {
+    "domain": "gitamedu.com",
+    "attribution_level": "No Ownership Evidence",
+    "attribution_score": 0,
+    "attribution_severity": "none",
+    "display_owner": false,
+    "attribution_evidence": [],
+    "attribution_summary": "No verifiable ownership evidence found for gitamedu.com. This is common for privacy-protected or recently registered domains.",
+    "has_owner_footprint": false,
+    "emails_found": [],
+    "gravatar_profiles": [],
+    "github_profile": null,
+    "social_media": {
+      "profiles": []
+    },
+    "org_names": []
+  },
+  "threat_intel": {
+    "feeds": [
+      {
+        "provider": "URLhaus",
+        "available": false,
+        "flagged": false,
+        "source": "error",
+        "error": "HTTP Error 401: Unauthorized"
+      },
+      {
+        "provider": "VirusTotal",
+        "available": false,
+        "flagged": false,
+        "source": "disabled",
+        "note": "VIRUSTOTAL_API_KEY not set"
+      },
+      {
+        "provider": "AbuseIPDB",
+        "available": false,
+        "flagged": false,
+        "source": "disabled",
+        "note": "ABUSEIPDB_API_KEY not set"
+      },
+      {
+        "provider": "urlscan.io",
+        "available": true,
+        "flagged": false,
+        "source": "live",
+        "result_count": 0,
+        "recent": []
+      }
+    ],
+    "total_checked": 4,
+    "total_flagged": 0,
+    "overall_score": 0.0
+  },
+  "ensemble_ml": {
+    "ensemble_verdict": "uncertain",
+    "ensemble_score": 22.0,
+    "model_count": 4,
+    "available_models": [
+      "xgboost",
+      "lightgbm",
+      "random_forest",
+      "logistic_regression"
+    ],
+    "model_predictions": {
+      "xgboost": 2.3,
+      "lightgbm": 0.1,
+      "random_forest": 38.7,
+      "logistic_regression": 89.4
+    },
+    "model_agreement": 25,
+    "confidence": 77.2,
+    "entropy": {
+      "shannon_entropy_bits": 0.7595,
+      "interpretation": "high"
+    },
+    "kl_divergence": 0.0002,
+    "beta_interval": {
+      "posterior_mean": 0.3333333333333333,
+      "lower_bound": 0.0,
+      "upper_bound": 0.6825482724078658,
+      "interval_width": 0.6825482724078658
+    },
+    "cohens_kappa": 1.0,
+    "bma": {
+      "bma_proba": 0.3261,
+      "bayes_factor": 853.49
+    }
+  },
+  "score_breakdown": {
+    "heuristic_analysis": 23,
+    "security_headers": 15,
+    "xgboost_ml": 2.3,
+    "ai_analysis": 5,
+    "signal_strength": {
+      "heuristic_analysis": "PRIMARY",
+      "security_headers": "SUPPORTING",
+      "xgboost_ml": "SUPPORTING",
+      "ai_analysis": "CONFIDENCE BOOST"
+    },
+    "final_score": 15,
+    "classification": "LOW RISK",
+    "classification_v2": "LOW RISK",
+    "classification_severity": "low",
+    "trust_bonuses": {
+      "valid_ssl": 5.0
+    },
+    "trust_bonus_total": 5.0,
+    "verified_org_bonus": 0.0,
+    "is_verified_org": false,
+    "phishing_penalties": {},
+    "phishing_penalty_total": 0.0,
+    "hybrid_breakdown": {
+      "weighted_heuristic": 8.0,
+      "weighted_headers": 3.0,
+      "weighted_xgboost_ml": 0.5,
+      "weighted_ai": 0.5,
+      "base_score": 12.0,
+      "trust_bonus_applied": -5.0,
+      "phishing_penalty_applied": 0.0,
+      "weights": {
+        "heuristics": 0.35,
+        "security_headers": 0.2,
+        "xgboost_ml": 0.2,
+        "domain_reputation": 0.15,
+        "ai_analysis": 0.1
+      }
+    },
+    "dynamic_confidence": {
+      "confidence_pct": 76,
+      "confidence_level": "Medium",
+      "reasoning": [
+        "ENSEMBLE MATH: Shannon entropy is high (0.759 bits) \u2014 models disagree, lowering confidence.",
+        "ENSEMBLE MATH: KL divergence is negligible \u2014 strong model consensus.",
+        "ENSEMBLE MATH: Beta 95% credible interval is wide (0.683) \u2014 Bayesian posterior uncertainty.",
+        "ENSEMBLE MATH: Cohen's \u03ba=1.00 \u2014 excellent inter-model agreement beyond chance.",
+        "ENSEMBLE MATH: Bayes factor=853.5 \u2014 strong evidence favoring the best model."
+      ]
+    },
+    "explainable_reasoning": [
+      "FINAL SCORE: 15/100 (LOW RISK)",
+      "  Weighted base: 12.0",
+      "  Trust bonuses: -5.0",
+      "  Phishing penalties: +0.0",
+      "  TRUST: Valid SSL/TLS certificate present (-5 risk)."
+    ]
+  },
+  "brand_impersonation": {
+    "error": "analyze_brand_impersonation() got an unexpected keyword argument 'ssl_issuer'"
+  },
+  "ai_detailed_report": "",
+  "data_completeness": {},
+  "timing": {
+    "total_ms": 42453.3,
+    "ml_model_ms": 1.56,
+    "ml_feature_ms": 16.08,
+    "ml_available": true
+  }
+}

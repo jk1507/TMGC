@@ -102,14 +102,26 @@ def _softmax(values: list[float]) -> list[float]:
     return [v / s for v in e]
 
 
+# --- Model Cache ---
+# Ensemble models are loaded once and reused across requests.
+_model_cache: dict[str, Any] = {}
+_model_cache_lock = __import__("threading").Lock()
+
+
 def _load_model(model_key: str) -> Any | None:
-    """Load a single model from disk."""
+    """Load a single model from disk, cached after first load."""
+    with _model_cache_lock:
+        if model_key in _model_cache:
+            return _model_cache[model_key]
     path = MODEL_PATHS.get(model_key)
     if not path or not os.path.exists(path):
         return None
     try:
         with open(path, "rb") as f:
-            return pickle.load(f)
+            model = pickle.load(f)
+        with _model_cache_lock:
+            _model_cache[model_key] = model
+        return model
     except Exception:
         return None
 

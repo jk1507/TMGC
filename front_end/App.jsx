@@ -84,7 +84,7 @@ function App() {
   const [loadingAI, setLoadingAI] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [deepScan, setDeepScan] = useState(false);
+  const [deepScan, setDeepScan] = useState(true);
   const [scanMeta, setScanMeta] = useState({ startedAt: null, completedAt: null, durationMs: null });
   const [mlInferenceMs, setMlInferenceMs] = useState(null);
   const exportRef = useRef(null);
@@ -199,9 +199,10 @@ function App() {
         `>> RISK SCORE LOCKED: ${payload.risk_score}/100`,
       ]);
       // Auto-trigger detailed AI analysis after scan completes
+      const autoRawContext = payload.raw_context || "";
       setTimeout(() => {
         // Only auto-run if user hasn't manually triggered it yet
-        runAIAnalysis();
+        runAIAnalysis(autoRawContext);
       }, 500);
     } catch (analysisError) {
       setError(analysisError.message || "Analysis failed.");
@@ -216,7 +217,7 @@ function App() {
     }
   }
 
-  async function runAIAnalysis() {
+  async function runAIAnalysis(overrideRawContext) {
   const cleanTarget = target.trim();
   if (!cleanTarget) return;
 
@@ -230,11 +231,8 @@ function App() {
     ">> EXECUTING CONTEXTUAL THREAT REASONING...",
   ]);
 
-  // Get raw_context from result if available, otherwise fetch from backend
-  let rawContext = data?.raw_context || "";
-  if (!rawContext && result) {
-    rawContext = result.raw_context || "";
-  }
+  // Get raw_context: prefer explicit param, then state, then empty
+  let rawContext = overrideRawContext || data?.raw_context || result?.raw_context || "";
 
   try {
     const response = await fetch(AI_ANALYSIS_API, {

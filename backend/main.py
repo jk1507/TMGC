@@ -68,12 +68,16 @@ except ImportError:
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 try:
     from google import genai
 except Exception:
     genai = None
+
+# Local LLM (Ollama / LM Studio / llama.cpp server) for offline report generation
+from local_llm import local_llm_chat
 
 load_dotenv()
 
@@ -239,10 +243,18 @@ def fallback_dns(domain: str, rtype: str) -> str:
     return ""
 
 
+WHOIS_SOCKET_TIMEOUT_SECONDS = 8.0
+
+
 def fallback_whois(query: str) -> str:
     """Fallback using python-whois when whois CLI is unavailable."""
     if not whois_lib:
         return "python-whois library is not installed."
+    # python-whois performs a live socket query against the registry.
+    # Some registries are slow or unresponsive; bound the socket so a
+    # bad registry can never hang the whole scan (and restore afterwards).
+    _old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(WHOIS_SOCKET_TIMEOUT_SECONDS)
     try:
         w = whois_lib.whois(query)
         lines = []
@@ -292,6 +304,8 @@ def fallback_whois(query: str) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"WHOIS fallback error: {e}"
+    finally:
+        socket.setdefaulttimeout(_old_timeout)
 
 
 def _try_rdap(ip: str, base_url: str) -> str | None:
@@ -299,7 +313,7 @@ def _try_rdap(ip: str, base_url: str) -> str | None:
     try:
         url = f"{base_url}/ip/{ip}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=1.0) as resp:
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             lines = []
 
@@ -308,31 +322,53 @@ def _try_rdap(ip: str, base_url: str) -> str | None:
             if data.get("handle"):
                 lines.append(f"netname: {data.get('handle')}")
 
-            country = None
-            for entity in data.get("entities", []):
-                vcard = entity.get("vcardArray")
-                if vcard and len(vcard) > 1:
-                    for item in vcard[1]:
-                        if item[0] == 'adr' and item[1].get('label'):
-                            label = item[1].get('label')
-                            label_parts = [p.strip() for p in label.split('\n') if p.strip()]
-                            if label_parts:
-                                country = label_parts[-1]
-                        if item[0] == 'org':
-                            lines.append(f"descr: {item[3]}")
+            # Country: prefer the authoritative top-level RDAP country field
+            # ("IN", "US", ...). Only fall back to vcard address labels, which
+            # RIRs like APNIC fill with raw street addresses (not ISO codes).
+            country = data.get("country")
+            if not country:
+                for entity in data.get("entities", []):
+                    vcard = entity.get("vcardArray")
+                    if vcard and len(vcard) > 1:
+                        for item in vcard[1]:
+                            if item[0] == 'adr' and isinstance(item[1], dict) and item[1].get('label'):
+                                label_parts = [p.strip() for p in item[1]['label'].split('\n') if p.strip()]
+                                if label_parts:
+                                    country = label_parts[-1]
+                            if item[0] == 'org':
+                                lines.append(f"descr: {item[3]}")
             if country:
                 lines.append(f"country: {country}")
 
-            # Try all known ASN field names across RIRs
-            # Note: ARIN returns empty list [] rather than None, so check length
+            # Try all known ASN field names across RIRs.
+            # Note: ARIN returns an empty list [] rather than None, so check length.
             asn = None
             for asn_key in ("arin_originas0_originautnums", "originAutnum", "autnum", "asn"):
                 asns = data.get(asn_key)
-                if asns is not None and isinstance(asns, (list, tuple)) and len(asns) > 0:
-                    asn = f"AS{asns[0]}"
+                if asns is None:
+                    continue
+                if isinstance(asns, (list, tuple)) and len(asns) > 0:
+                    asn = asns[0]
                     break
-            if asn:
-                lines.append(f"origin: {asn}")
+                if isinstance(asns, (str, int)):
+                    asn = asns
+                    break
+            if asn is not None:
+                asn_str = str(asn)
+                asn_m = re.search(r"(?:AS)?\s*(\d{1,10})", asn_str, flags=re.IGNORECASE)
+                if asn_m:
+                    lines.append(f"origin: AS{asn_m.group(1)}")
+                else:
+                    lines.append(f"origin: {asn_str.upper()}")
+            else:
+                # Some RIRs expose the origin ASN only as an entity handle like
+                # "AS133982" (e.g. on the network object's entities).
+                for entity in data.get("entities", []):
+                    ent_handle = entity.get("handle") or ""
+                    ent_m = re.search(r"\bAS\d{1,10}\b", ent_handle, flags=re.IGNORECASE)
+                    if ent_m:
+                        lines.append(f"origin: {ent_m.group(0).upper()}")
+                        break
 
             # Extract organization name from entity vcard (more descriptive than network name)
             org_name = None
@@ -349,28 +385,22 @@ def _try_rdap(ip: str, base_url: str) -> str | None:
             elif org_name:
                 lines.append(f"OrgName: {org_name}")
 
-            # Infer ASN from org name if no direct ASN was found
-            if not any(l.startswith("origin:") for l in lines) and org_name:
-                org_lower = org_name.lower()
-                for org_key, (asn_val, _) in ORG_TO_ASN.items():
-                    if org_key in org_lower:
-                        lines.append(f"origin: {asn_val}")
-                        break
-
-            # Extract country from entity vcard address field
-            country_val = None
-            for entity in data.get("entities", []):
-                vcard = entity.get("vcardArray")
-                if vcard and len(vcard) > 1:
-                    for item in vcard[1]:
-                        if item[0] == 'adr':
-                            label = item[1].get('label', '') if isinstance(item[1], dict) else ''
-                            if label:
-                                parts = [p.strip() for p in label.split('\n') if p.strip()]
-                                if parts:
-                                    country_val = parts[-1]
-            if country_val and not any("country" in l for l in lines):
-                lines.append(f"country: {country_val}")
+            # Infer ASN from org/network name if no direct ASN was found.
+            # Some RIRs (e.g. APNIC) only name the network block ("NETRAJ")
+            # and put the real company in entity vcards or remarks.
+            if not any(l.startswith("origin:") for l in lines):
+                org_candidates = [
+                    org_name or "",
+                    str(data.get("name") or ""),
+                ]
+                org_lower = " ".join(c for c in org_candidates if c).lower()
+                if org_lower:
+                    for org_key, (asn_val, asn_country) in ORG_TO_ASN.items():
+                        if org_key in org_lower:
+                            lines.append(f"origin: {asn_val}")
+                            if not any("country" in l for l in lines):
+                                lines.append(f"country: {asn_country}")
+                            break
 
             # Port43 hints for hosting provider
             port43 = data.get("port43", "")
@@ -500,15 +530,34 @@ def fallback_ip_whois(ip: str) -> str:
     IP WHOIS fallback trying RDAP across ALL RIRs, then PTR/CDN heuristic, then python-whois.
 
     Resolution chain:
-      1. RDAP: ARIN, RIPE, APNIC, LACNIC, AFRINIC
+      1. RDAP: ARIN, RIPE, APNIC, LACNIC, AFRINIC — queried CONCURRENTLY
+         so the authoritative RIR answers in ~1.5s instead of up to 7.5s sequentially.
       2. PTR reverse DNS + hostname CDN heuristics
       3. python-whois library
     """
-    # Step 1: Try each RIR RDAP endpoint
-    for endpoint in RIR_RDAP_ENDPOINTS:
-        result = _try_rdap(ip, endpoint)
-        if result is not None:
-            return result
+    # Step 1: Query every RIR RDAP endpoint in parallel — the authoritative
+    # registry answers quickly while the others 404/timeout harmlessly.
+    # Each request is individually bounded by _try_rdap's 1.5s timeout.
+    # NOTE: we shut the pool down with wait=False after the first success so a
+    # slow/broken endpoint can never delay the whole lookup.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    pool = None
+    try:
+        pool = ThreadPoolExecutor(max_workers=len(RIR_RDAP_ENDPOINTS))
+        futures = {pool.submit(_try_rdap, ip, endpoint): endpoint for endpoint in RIR_RDAP_ENDPOINTS}
+        for fut in as_completed(futures):
+            try:
+                result = fut.result()
+            except Exception:
+                result = None
+            if result is not None:
+                return result
+    except Exception:
+        pass
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=False)
 
     # Step 2: PTR reverse DNS lookup + CDN heuristics
     ptr_name = _ptr_reverse_lookup(ip)
@@ -524,6 +573,122 @@ def fallback_ip_whois(ip: str) -> str:
 
     # Step 3: Last resort - python-whois library
     return fallback_whois(ip)
+
+
+# ------------------------------------------------------------------------------
+# DOMAIN RDAP FALLBACK (HTTP-based, no whois binary / no port-43 needed)
+# ------------------------------------------------------------------------------
+# The `whois` CLI does not exist on Windows, and some networks block the
+# WHOIS port 43 entirely. RDAP is the modern JSON replacement served over
+# plain HTTPS by every registry, so it is the most reliable "whois" path.
+# We discover each TLD's registry RDAP base URL from the IANA bootstrap file
+# (cached for 24h) and fall back to a hardcoded map for the common TLDs.
+
+_RDAP_BOOTSTRAP_CACHE: dict = {"fetched_at": 0.0, "tld_to_base": {}}
+_RDAP_BOOTSTRAP_TTL_SECONDS = 24 * 3600
+_RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json"
+
+# Common TLD -> registry RDAP base URL (used if IANA bootstrap is unreachable)
+COMMON_TLD_RDAP_BASES: dict[str, str] = {
+    "com": "https://rdap.verisign.com/com/v1/",
+    "net": "https://rdap.verisign.com/net/v1/",
+    "org": "https://rdap.publicinterestregistry.org/rdap/",
+    "dev": "https://www.registry.google/rdap/",
+    "app": "https://www.registry.google/rdap/",
+    "io": "https://rdap.identitydigital.services/rdap/",
+    "co": "https://rdap.identitydigital.services/rdap/",
+    "info": "https://rdap.afilias.net/rdap/",
+    "biz": "https://rdap.afilias.net/rdap/",
+    "xyz": "https://rdap.centralnic.com/rdap/",
+    "top": "https://rdap.afilias.net/rdap/",
+    "online": "https://rdap.centralnic.com/rdap/",
+    "site": "https://rdap.centralnic.com/rdap/",
+    "in": "https://rdap.registry.in/",
+    "de": "https://rdap.denic.de/",
+    "nl": "https://rdap.sidn.nl/",
+    "uk": "https://rdap.nominet.uk/",
+    "ca": "https://rdap.cira.ca/",
+    "us": "https://rdap.nic.us/",
+    "ru": "https://rdap.tcinet.ru/",
+    "cn": "https://rdap.conac.cn/",
+}
+
+
+def _get_rdap_base_for_tld(tld: str) -> str | None:
+    """Return the registry RDAP base URL for a TLD (IANA bootstrap, cached)."""
+    import time as _t
+    now = _t.time()
+    if now - _RDAP_BOOTSTRAP_CACHE["fetched_at"] > _RDAP_BOOTSTRAP_TTL_SECONDS:
+        try:
+            req = urllib.request.Request(_RDAP_BOOTSTRAP_URL, headers={"User-Agent": "retro-intel/1.0"})
+            with urllib.request.urlopen(req, timeout=6.0) as resp:
+                bootstrap = json.loads(resp.read().decode("utf-8"))
+            mapping: dict[str, str] = {}
+            for services in bootstrap.get("services", []):
+                tlds, urls = services
+                if urls:
+                    for t in tlds:
+                        mapping.setdefault(str(t).lower(), str(urls[0]).rstrip("/") + "/")
+            _RDAP_BOOTSTRAP_CACHE["tld_to_base"] = mapping
+            _RDAP_BOOTSTRAP_CACHE["fetched_at"] = now
+        except Exception:
+            pass  # keep stale cache / fall back to hardcoded map
+    return _RDAP_BOOTSTRAP_CACHE["tld_to_base"].get(tld) or COMMON_TLD_RDAP_BASES.get(tld)
+
+
+def fallback_domain_rdap(domain: str) -> str | None:
+    """
+    Query the registries' RDAP-over-HTTPS for a domain and format the result
+    with the same labels parse_domain_whois() expects (Creation Date, Registrar,
+    Name Server, Domain Status). Returns None if no registry answered.
+    """
+    tld = domain.rsplit(".", 1)[-1].lower() if "." in domain else ""
+    base = _get_rdap_base_for_tld(tld) if tld else None
+    if not base:
+        return None
+    try:
+        req = urllib.request.Request(
+            f"{base}domain/{domain}",
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/rdap+json"},
+        )
+        with urllib.request.urlopen(req, timeout=6.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        lines = [f"Domain Name: {data.get('ldhName') or domain.upper()}"]
+
+        for ev in data.get("events", []):
+            if ev.get("eventAction") == "registration" and ev.get("eventDate"):
+                lines.append(f"Creation Date: {ev['eventDate']}")
+                break
+
+        for status in data.get("status", []):
+            lines.append(f"Domain Status: {status}")
+
+        for ent in data.get("entities", []):
+            roles = ent.get("roles", [])
+            vc = ent.get("vcardArray") or [None, []]
+            vcard_items = vc[1] if len(vc) > 1 else []
+            org_val = None
+            fn_val = None
+            for item in vcard_items:
+                if item[0] == "org" and len(item) > 3:
+                    org_val = item[3]
+                elif item[0] == "fn" and len(item) > 3:
+                    fn_val = item[3]
+            name_val = org_val or fn_val or ent.get("handle") or ""
+            roles_lower = [str(r).lower() for r in roles]
+            if "registrar" in roles_lower and name_val:
+                lines.append(f"Registrar: {name_val}")
+            elif any("name server" in r or "nameserver" in r for r in roles_lower) and ent.get("handle"):
+                lines.append(f"Name Server: {str(ent['handle']).lower()}")
+            elif org_val and not any(r in roles_lower for r in ("technical", "administrative", "abuse")):
+                lines.append(f"OrgName: {org_val}")
+
+        if len(lines) > 1:  # domain name alone is not useful
+            return "\n".join(lines)
+    except Exception:
+        pass
+    return None
 
 
 def fallback_ssl_probe(domain: str) -> str:
@@ -561,11 +726,15 @@ async def fallback_port_scan(domain: str, ports: list[int]) -> str:
     """Port scanning fallback using native async sockets."""
     open_ports = []
     
+    # Use a generous per-port timeout: this runs in parallel with the other
+    # probes (WHOIS/RDAP/HTTP), and a busy system + DNS resolution can push
+    # a single connect past 1s. 2.5s keeps the total sweep ~2.5s while still
+    # reliably detecting open ports.
     async def check_port(port: int):
         try:
             _, writer = await asyncio.wait_for(
                 asyncio.open_connection(domain, port),
-                timeout=1.0
+                timeout=2.5
             )
             writer.close()
             await writer.wait_closed()
@@ -715,6 +884,10 @@ async def run_python_fallback(name: str, command: list[str]) -> str | None:
         return fallback_dns(domain, "MX")
     elif name == "domain_whois":
         domain = command[1]
+        # HTTP/RDAP first (fast, no port-43 dependency), python-whois as backup
+        rdap_out = await asyncio.to_thread(fallback_domain_rdap, domain)
+        if rdap_out:
+            return rdap_out
         return await asyncio.to_thread(fallback_whois, domain)
     elif name == "ip_whois":
         ip = command[1]
@@ -739,7 +912,15 @@ async def run_python_fallback(name: str, command: list[str]) -> str | None:
 
 
 def get_ml_prediction(domain: str, parsed_domain: Any, whois_raw_stdout: str, has_valid_ssl: bool = False, has_mx: bool = False, has_asn: bool = False, header_score: int = 0) -> dict:
-    """Calculate lexical/whois features and run XGBoost model prediction."""
+    """Calculate lexical/whois features and run XGBoost model prediction.
+
+    Returns dict with ML prediction AND timing info:
+      - xgb_available: bool
+      - ml_inference_ms: float (actual model.predict_proba() time only)
+      - ml_feature_ms: float (feature extraction time)
+    """
+    import time as _time
+    _feature_start = _time.perf_counter()
     try:
         import sys
         backend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -749,7 +930,7 @@ def get_ml_prediction(domain: str, parsed_domain: Any, whois_raw_stdout: str, ha
         import numpy as np
     except Exception as e:
         print("XGBoost module imports failed:", e)
-        return {"xgb_available": False}
+        return {"xgb_available": False, "ml_inference_ms": 0, "ml_feature_ms": 0}
         
     try:
         clean = domain.strip().lower()
@@ -942,20 +1123,33 @@ def get_ml_prediction(domain: str, parsed_domain: Any, whois_raw_stdout: str, ha
         min(header_score / 15.0, 1.0),  # 31: header security deficit 0.0=perfect(max 15=all 5 required headers missing)
     ]
     
+    _feature_ms = (_time.perf_counter() - _feature_start) * 1000
+    
     try:
         model = load_xgb()
         if model is not None:
+            _pred_start = _time.perf_counter()
             xgb_result = predict_xgb(model, vector)
+            _pred_ms = (_time.perf_counter() - _pred_start) * 1000
             xgb_result["feature_vector"] = vector
+            xgb_result["ml_inference_ms"] = round(_pred_ms, 3)
+            xgb_result["ml_feature_ms"] = round(_feature_ms, 3)
             return xgb_result
     except Exception as e:
         print("XGB predict execution failed:", e)
         
-    return {"xgb_available": False}
+    return {"xgb_available": False, "ml_inference_ms": 0, "ml_feature_ms": round(_feature_ms, 3)}
 
 
 APP_NAME = "RETRO_INTEL: OSINT Domain Threat Analyzer"
+MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
 COMMAND_TIMEOUT_SECONDS = 3
+# Python fallbacks query LIVE network services (WHOIS registries, RDAP endpoints,
+# port sweeps) which are much slower than the fast local binaries they replace.
+# A cold WHOIS lookup typically takes 3-6s and the 5-RIR RDAP chain can take up
+# to 7s, so a 3s budget permanently kills them on machines without the whois/nc
+# CLI tools. Fallbacks get this separate, more generous budget.
+FALLBACK_TIMEOUT_SECONDS = 20
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$")
 IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 HEADER_NAMES = [
@@ -1058,7 +1252,7 @@ _COUNTRY_NAME_TO_CODE: dict[str, str] = {
 
 class AnalyzeRequest(BaseModel):
     url: str = Field(min_length=3, max_length=2048)
-    deep_scan: bool = False
+    deep_scan: bool = True
 
 
 class CommandResult(BaseModel):
@@ -1123,6 +1317,8 @@ class AnalyzeResponse(BaseModel):
     ai_detailed_report: str = ""
     # v4.0: Data completeness tracking
     data_completeness: dict[str, Any] = Field(default_factory=dict)
+    # v5.0: Inference timing (milliseconds)
+    timing: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass
@@ -1265,7 +1461,7 @@ async def health() -> dict[str, str]:
 @app.get("/api/v1/analyze", response_model=AnalyzeResponse)
 async def analyze_get(
     target: str = Query(min_length=3, max_length=2048),
-    deep_scan: bool = Query(default=False),
+    deep_scan: bool = Query(default=True),
 ) -> AnalyzeResponse:
     return await run_analysis(target, deep_scan=deep_scan)
 
@@ -1286,19 +1482,18 @@ async def ai_analysis(payload: dict):
 
     raw_context = payload.get("raw_context", "")
 
+    # If no raw_context supplied, auto-run analyze to obtain it
     if not raw_context:
-        raise HTTPException(
-            status_code=400,
-            detail="No RAW_TXT_LOG available. Run ANALYZE first."
-        )
-
-    api_key = os.getenv("GEMINI_API_KEY")
-
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Gemini API key not loaded"
-        )
+        try:
+            analyze_result = await run_analysis(url)
+            raw_context = analyze_result.raw_context
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to auto-fetch analysis context: {exc}"
+            )
 
     prompt = f"""
     You are a Senior SOC Cybersecurity Analyst.
@@ -1325,32 +1520,63 @@ async def ai_analysis(payload: dict):
     {raw_context}
     """
 
-    client = genai.Client(api_key=api_key)
-
+    # 1) Try the local LLM first so analysis can run fully offline.
+    #    qwen2.5:3b needs ~7-20s for a long SOC report (cold VRAM load adds more),
+    #    so give it a generous budget before falling back to Gemini.
     try:
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
+        ai_text = await asyncio.wait_for(local_llm_chat(prompt), timeout=90.0)
+        if ai_text:
+            return {"formatted_report": ai_text}
+    except Exception:
+        pass
 
-        ai_text = getattr(response, "text", "")
+    # 2) Fall back to Gemini if a key is configured
+    api_key = os.getenv("GEMINI_API_KEY")
+    if api_key and genai is not None:
+        try:
+            client = genai.Client(api_key=api_key)
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model="gemini-2.5-flash",
+                contents=prompt,
+            )
+            ai_text = getattr(response, "text", "") or ""
+            if ai_text:
+                return {"formatted_report": ai_text}
+        except Exception as exc:
+            # NEVER surface raw API errors (quota, keys, etc.) to the user.
+            # Log server-side and return a clean offline evaluation instead.
+            print(f"[ai-analysis] live AI report unavailable; offline fallback used: {exc}")
+            return {
+                "formatted_report": """# RETRO_INTEL SOC Evaluation (Offline Mode)
 
-    except Exception as e:
-        ai_text = f"""
-AI Analysis temporarily unavailable.
+## Executive Summary
+A live AI narrative could not be generated right now, so this evaluation reflects
+the local heuristic + ML engines only. The verdict, risk score, and evidence
+breakdown on this page are fully valid — only the natural-language report is
+missing.
 
-Reason:
-{str(e)}
-
-Possible fixes:
-- Wait a few minutes
-- Create a new Gemini API key
-- Upgrade Gemini quota
+## Recommendations
+- Re-run this analysis in a few minutes to get the full AI report.
+- For fully offline reports, keep Ollama running and pull a model:
+    ollama pull qwen2.5:3b
+- For online reports, add a valid GEMINI_API_KEY to backend/.env.
 """
+            }
 
+    # 3) Nothing available — explain how to enable offline AI
     return {
-        "formatted_report": ai_text
+        "formatted_report": """
+AI Analysis unavailable.
+
+No local LLM is reachable and no Gemini API key is configured.
+
+To enable AI analysis:
+- Install Ollama (https://ollama.com) and pull a model, e.g.:
+    ollama pull qwen2.5:3b
+  (the backend talks to it automatically at http://127.0.0.1:11434/v1)
+- Or add GEMINI_API_KEY to your .env file.
+"""
     }
 
 
@@ -1959,7 +2185,9 @@ def clean_domain(raw_target: str) -> str:
     return target
 
 
-async def run_analysis(raw_target: str, deep_scan: bool = False) -> AnalyzeResponse:
+async def run_analysis(raw_target: str, deep_scan: bool = True) -> AnalyzeResponse:
+    import time as _time
+    _analysis_start = _time.perf_counter()
     domain = clean_domain(raw_target)
     if not DOMAIN_RE.match(domain):
         raise HTTPException(status_code=400, detail="Invalid public domain format.")
@@ -2672,7 +2900,7 @@ async def run_analysis(raw_target: str, deep_scan: bool = False) -> AnalyzeRespo
 
     # Await the AI analysis task that was launched in parallel with v2.0 engines
     try:
-        ai_report, ai_score = await asyncio.wait_for(ai_task, timeout=8.0)
+        ai_report, ai_score = await asyncio.wait_for(ai_task, timeout=75.0)
     except asyncio.TimeoutError:
         ai_report = "⚠ AI Analysis timed out after 12s"
         ai_score = None
@@ -3044,6 +3272,12 @@ async def run_analysis(raw_target: str, deep_scan: bool = False) -> AnalyzeRespo
         ensemble_ml=ensemble_result,
         score_breakdown=score_components,
         brand_impersonation=brand_impersonation_result,
+        timing={
+            "total_ms": round((_time.perf_counter() - _analysis_start) * 1000, 1),
+            "ml_model_ms": xgb_res.get("ml_inference_ms", 0),
+            "ml_feature_ms": xgb_res.get("ml_feature_ms", 0),
+            "ml_available": xgb_res.get("xgb_available", False),
+        },
     )
 
 async def run_command(
@@ -3086,9 +3320,12 @@ async def run_command(
     # Intercept command failure or unavailability and run Python fallback
     if status != "ok":
         try:
+            # Live network fallbacks (WHOIS/RDAP/port scan) legitimately take
+            # longer than the 3s binary timeout; never starve them.
+            fallback_timeout = max(timeout, FALLBACK_TIMEOUT_SECONDS)
             fallback_stdout = await asyncio.wait_for(
                 run_python_fallback(name, command),
-                timeout=timeout
+                timeout=fallback_timeout
             )
             if fallback_stdout is not None:
                 return CommandResult(
@@ -3113,10 +3350,6 @@ async def run_command(
     )
 
 async def run_ai_core(raw_context: str, findings: list[str], fallback_score: int) -> tuple[str, int | None]:
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key or genai is None:
-        return fallback_ai_report(findings, fallback_score), fallback_score
-
     prompt = f"""
 You are a Tier-3 SOC analyst and threat hunter. Evaluate this structured OSINT evidence.
 Return a concise markdown SOC report with these exact sections:
@@ -3143,6 +3376,23 @@ Never claim identity attribution. Only assess technical threat indicators.
 
 {raw_context}
 """
+    # 1) Try the local LLM first so the ML/AI pipeline runs fully offline.
+    #    Generous timeout: local generation typically takes 7-20s (longer on the
+    #    first call while the model loads into VRAM). The caller's 75s cap is the
+    #    real outer budget, so Gemini still gets a chance if Ollama is down.
+    try:
+        text = await asyncio.wait_for(local_llm_chat(prompt), timeout=60.0)
+        if text:
+            score = extract_ai_score(text)
+            return text, score
+    except Exception:
+        pass
+
+    # 2) Fall back to Gemini if a key is configured
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key or genai is None:
+        return fallback_ai_report(findings, fallback_score), fallback_score
+
     try:
         client = genai.Client(api_key=api_key)
         response = await asyncio.to_thread(client.models.generate_content, model="gemini-2.5-flash", contents=prompt)
@@ -3808,6 +4058,242 @@ if TRANSFORMER_ENSEMBLE_AVAILABLE:
             raise HTTPException(status_code=400, detail="Graph data is required")
         result = analyze_graph_gnn(graph_data=graph_data)
         return result
+
+# --- v5.0 Real-Time Inference Optimization ---
+
+@app.post("/api/v1/export-onnx")
+async def export_onnx_endpoint():
+    """Export XGBoost model to ONNX format for faster inference.
+
+    Extracts the inner XGBClassifier from the CalibratedClassifierCV wrapper
+    and converts it to ONNX using onnxmltools (which has native XGBoost support).
+    """
+    try:
+        from onnxmltools import convert_xgboost
+        from onnxmltools.convert.common.data_types import FloatTensorType
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="ONNX dependencies not installed. Run: pip install onnx onnxmltools onnxruntime",
+        )
+
+    import sys
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    if backend_dir not in sys.path:
+        sys.path.append(backend_dir)
+    from ml_xgboost import load_xgb
+
+    model = load_xgb()
+    if model is None:
+        raise HTTPException(status_code=503, detail="XGBoost model not loaded. Run a training script first.")
+
+    try:
+        import onnx
+
+        # Extract the inner XGBClassifier from CalibratedClassifierCV wrapper.
+        # CalibratedClassifierCV is not directly ONNX-convertible, but the
+        # inner XGBClassifier is. We export the raw XGB model for ONNX.
+        xgb_model = getattr(model, "estimator", model)
+
+        # 32 features matching the feature vector in get_ml_prediction()
+        initial_type = [("float_input", FloatTensorType([None, 32]))]
+        onnx_model = convert_xgboost(xgb_model, initial_types=initial_type)
+
+        # Fix opset domain: onnxmltools exports with 'ai.onnx.ml' but
+        # onnxruntime quantization requires 'ai.onnx' to be present.
+        has_ai_onnx = any(
+            o.domain in ("", "ai.onnx") for o in onnx_model.opset_import
+        )
+        if not has_ai_onnx:
+            new_opset = onnx_model.opset_import.add()
+            new_opset.domain = "ai.onnx"
+            new_opset.version = 13
+        onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
+
+        onnx_path = os.path.join(MODEL_DIR, "xgb_model.onnx")
+        with open(onnx_path, "wb") as f:
+            f.write(onnx_model.SerializeToString())
+
+        # Quick sanity check: run one inference to verify the model works
+        import onnxruntime as ort
+        import numpy as np
+
+        session = ort.InferenceSession(onnx_path)
+        input_name = session.get_inputs()[0].name
+        test_vec = np.array([[0.5] * 32], dtype=np.float32)
+        session.run(None, {input_name: test_vec})
+
+        return {
+            "status": "ok",
+            "path": onnx_path,
+            "size_bytes": os.path.getsize(onnx_path),
+            "input_name": input_name,
+            "input_features": 32,
+            "message": "ONNX model exported and verified successfully",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ONNX export failed: {e}")
+
+
+@app.post("/api/v1/quantize-model")
+async def quantize_model_endpoint():
+    """Quantize XGBoost model to INT8 for smaller size and faster inference."""
+    onnx_path = os.path.join(MODEL_DIR, "xgb_model.onnx")
+    quant_path = os.path.join(MODEL_DIR, "xgb_quantized.onnx")
+
+    # If no ONNX model exists yet, export it first
+    if not os.path.exists(onnx_path):        await export_onnx_endpoint()
+
+    if not os.path.exists(onnx_path):
+        raise HTTPException(status_code=503, detail="ONNX model not found after export attempt.")
+
+    try:
+        from onnxruntime.quantization import quantize_dynamic, QuantType
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="ONNX Runtime quantization not installed. Run: pip install onnxruntime",
+        )
+
+    try:
+        orig_size = os.path.getsize(onnx_path)
+
+        # Quantize to INT8
+        quantize_dynamic(onnx_path, quant_path, weight_type=QuantType.QInt8)
+
+        quant_size = os.path.getsize(quant_path)
+
+        return {
+            "status": "ok",
+            "original_size_kb": round(orig_size / 1024, 1),
+            "quantized_size_kb": round(quant_size / 1024, 1),
+            "reduction_pct": round((1 - quant_size / orig_size) * 100, 1),
+            "quantized_path": quant_path,
+            "message": f"Model quantized: {round(orig_size / 1024, 1)}KB → {round(quant_size / 1024, 1)}KB ({round((1 - quant_size / orig_size) * 100, 1)}% reduction)",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Quantization failed: {e}")
+
+
+@app.post("/api/v1/benchmark-inference")
+async def benchmark_inference_endpoint():
+    """Compare pickle vs ONNX vs quantized ONNX inference speed."""
+    import time
+    import numpy as np
+    import sys
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    if backend_dir not in sys.path:
+        sys.path.append(backend_dir)
+    from ml_xgboost import load_xgb
+
+    test_vector = [0.5] * 32  # 32 features matching get_ml_prediction()
+    results: dict[str, Any] = {}
+    n_runs = 100
+
+    # --- Benchmark 1: Pickle (current production model) ---
+    model = load_xgb()
+    if model is not None:
+        times = []
+        vec = np.array(test_vector, dtype=np.float32).reshape(1, -1)
+        # Warm up
+        for _ in range(10):
+            model.predict_proba(vec)
+        for _ in range(n_runs):
+            start = time.perf_counter()
+            model.predict_proba(vec)
+            times.append((time.perf_counter() - start) * 1000)
+        results["pickle"] = {
+            "mean_ms": round(float(np.mean(times)), 3),
+            "p95_ms": round(float(np.percentile(times, 95)), 3),
+            "p99_ms": round(float(np.percentile(times, 99)), 3),
+            "min_ms": round(float(np.min(times)), 3),
+            "n_runs": n_runs,
+        }
+    else:
+        results["pickle"] = {"error": "Model not loaded"}
+
+    # --- Benchmark 2: ONNX ---
+    onnx_path = os.path.join(MODEL_DIR, "xgb_model.onnx")
+    if os.path.exists(onnx_path):
+        try:
+            import onnxruntime as ort
+
+            session = ort.InferenceSession(onnx_path)
+            input_name = session.get_inputs()[0].name
+            onnx_vec = np.array([test_vector], dtype=np.float32)
+
+            times = []
+            # Warm up
+            for _ in range(10):
+                session.run(None, {input_name: onnx_vec})
+            for _ in range(n_runs):
+                start = time.perf_counter()
+                session.run(None, {input_name: onnx_vec})
+                times.append((time.perf_counter() - start) * 1000)
+            results["onnx"] = {
+                "mean_ms": round(float(np.mean(times)), 3),
+                "p95_ms": round(float(np.percentile(times, 95)), 3),
+                "p99_ms": round(float(np.percentile(times, 99)), 3),
+                "min_ms": round(float(np.min(times)), 3),
+                "n_runs": n_runs,
+            }
+        except ImportError:
+            results["onnx"] = {"error": "onnxruntime not installed"}
+        except Exception as e:
+            results["onnx"] = {"error": str(e)}
+    else:
+        results["onnx"] = {"error": "ONNX model not found. Run /api/v1/export-onnx first."}
+
+    # --- Benchmark 3: Quantized ONNX ---
+    quant_path = os.path.join(MODEL_DIR, "xgb_quantized.onnx")
+    if os.path.exists(quant_path):
+        try:
+            import onnxruntime as ort
+
+            session = ort.InferenceSession(quant_path)
+            input_name = session.get_inputs()[0].name
+            onnx_vec = np.array([test_vector], dtype=np.float32)
+
+            times = []
+            for _ in range(10):
+                session.run(None, {input_name: onnx_vec})
+            for _ in range(n_runs):
+                start = time.perf_counter()
+                session.run(None, {input_name: onnx_vec})
+                times.append((time.perf_counter() - start) * 1000)
+            results["onnx_int8"] = {
+                "mean_ms": round(float(np.mean(times)), 3),
+                "p95_ms": round(float(np.percentile(times, 95)), 3),
+                "p99_ms": round(float(np.percentile(times, 99)), 3),
+                "min_ms": round(float(np.min(times)), 3),
+                "n_runs": n_runs,
+            }
+        except Exception as e:
+            results["onnx_int8"] = {"error": str(e)}
+    else:
+        results["onnx_int8"] = {"error": "Quantized model not found. Run /api/v1/quantize-model first."}
+
+    # --- Summary ---
+    pickle_ms = results.get("pickle", {}).get("mean_ms")
+    onnx_ms = results.get("onnx", {}).get("mean_ms")
+    quant_ms = results.get("onnx_int8", {}).get("mean_ms")
+
+    results["summary"] = {
+        "target_ms": 50,
+        "pickle_ms": pickle_ms,
+        "onnx_ms": onnx_ms,
+        "onnx_int8_ms": quant_ms,
+        "onnx_speedup": round(pickle_ms / onnx_ms, 1) if pickle_ms and onnx_ms else None,
+        "int8_speedup": round(pickle_ms / quant_ms, 1) if pickle_ms and quant_ms else None,
+        "meets_50ms_target": (
+            (pickle_ms is not None and pickle_ms < 50)
+            or (onnx_ms is not None and onnx_ms < 50)
+            or (quant_ms is not None and quant_ms < 50)
+        ),
+    }
+
+    return results
+
 
 # --- v4.0 Feature Status ---
 @app.get("/api/v1/features")

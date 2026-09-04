@@ -49,8 +49,15 @@ beautifulsoup4>=4.12.0
 networkx>=3.0
 igraph>=0.11.0
 
-# --- HTTP Client (for MISP/OTX) ---
+# --- HTTP Client (for MISP/OTX + local LLM) ---
 requests>=2.31.0
+httpx>=0.27.0
+
+# --- ONNX / Real-Time Inference (v5.0) ---
+onnx>=1.15.0
+onnxmltools>=1.12.0
+onnxconverter-common>=1.14.0
+onnxruntime>=1.17.0
 
 # --- Environment ---
 python-dotenv>=1.0.0

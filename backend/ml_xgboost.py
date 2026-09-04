@@ -1,15 +1,54 @@
 import os
 import pickle
 import numpy as np
+import threading
+import time
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xgb_model.pkl")
 PRIORS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ensemble_priors.pkl")
 
-def load_xgb():
-    if os.path.exists(MODEL_PATH):
-        with open(MODEL_PATH, "rb") as f:
-            return pickle.load(f)
-    return None
+# --- Model Cache ---
+# Models are loaded once and reused across requests.
+# This avoids the ~1.8s pickle.load() overhead on every API call.
+_xgb_cache: dict = {"model": None, "loaded_at": None, "load_time_ms": None}
+_xgb_lock = threading.Lock()
+
+
+def load_xgb(force_reload: bool = False):
+    """Load XGBoost model from disk, caching after first load.
+
+    Returns the cached model on subsequent calls (~0ms).
+    Use force_reload=True to invalidate the cache.
+    """
+    global _xgb_cache
+    with _xgb_lock:
+        if not force_reload and _xgb_cache["model"] is not None:
+            return _xgb_cache["model"]
+        start = time.perf_counter()
+        if os.path.exists(MODEL_PATH):
+            with open(MODEL_PATH, "rb") as f:
+                model = pickle.load(f)
+        else:
+            model = None
+        load_time = (time.perf_counter() - start) * 1000
+        _xgb_cache["model"] = model
+        _xgb_cache["loaded_at"] = time.time()
+        _xgb_cache["load_time_ms"] = round(load_time, 2)
+        if model is not None:
+            print(f"[ML] XGBoost model loaded in {load_time:.1f}ms (cached)")
+        else:
+            print(f"[ML] XGBoost model not found at {MODEL_PATH}")
+        return model
+
+
+def get_xgb_cache_info() -> dict:
+    """Return cache status for the benchmark endpoint."""
+    return {
+        "cached": _xgb_cache["model"] is not None,
+        "load_time_ms": _xgb_cache["load_time_ms"],
+        "loaded_at": _xgb_cache["loaded_at"],
+        "model_path": MODEL_PATH,
+    }
 
 
 def _load_xgb_threshold(default: float = 0.70) -> float:
@@ -125,30 +164,38 @@ def train_xgb(X, y):
     best_iter = model.best_iteration if hasattr(model, 'best_iteration') and model.best_iteration else None
     n_est_cv = (best_iter + 1) if best_iter else 400
 
-    kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # Adaptive CV: small or single-class datasets must not crash StratifiedKFold.
+    pos_count_cv = int(np.sum(y == 1))
+    neg_count_cv = int(np.sum(y == 0))
+    n_splits = min(5, pos_count_cv, neg_count_cv) if pos_count_cv > 0 and neg_count_cv > 0 else 0
     cv_scores = []
-    for train_idx, val_idx in kfold.split(X, y):
-        cv_model = XGBClassifier(
-            n_estimators=n_est_cv,
-            max_depth=6,
-            learning_rate=0.06,
-            subsample=0.80,
-            colsample_bytree=0.80,
-            colsample_bylevel=0.80,
-            scale_pos_weight=scale_pos,
-            min_child_weight=2,
-            gamma=0.1,
-            reg_alpha=0.05,
-            reg_lambda=0.5,
-            random_state=42,
-            verbosity=0,
-            n_jobs=-1,
-        )
-        cv_model.fit(X[train_idx], y[train_idx])
-        cv_proba = cv_model.predict_proba(X[val_idx])[:, 1]
-        cv_scores.append(roc_auc_score(y[val_idx], cv_proba))
+    if n_splits >= 2:
+        kfold = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        for train_idx, val_idx in kfold.split(X, y):
+            cv_model = XGBClassifier(
+                n_estimators=n_est_cv,
+                max_depth=6,
+                learning_rate=0.06,
+                subsample=0.80,
+                colsample_bytree=0.80,
+                colsample_bylevel=0.80,
+                scale_pos_weight=scale_pos,
+                min_child_weight=2,
+                gamma=0.1,
+                reg_alpha=0.05,
+                reg_lambda=0.5,
+                random_state=42,
+                verbosity=0,
+                n_jobs=-1,
+            )
+            cv_model.fit(X[train_idx], y[train_idx])
+            cv_proba = cv_model.predict_proba(X[val_idx])[:, 1]
+            cv_scores.append(roc_auc_score(y[val_idx], cv_proba))
 
-    print(f"  5-Fold CV AUC: {np.mean(cv_scores):.4f} (+/- {np.std(cv_scores):.4f})")
+    if cv_scores:
+        print(f"  {n_splits}-Fold CV AUC: {np.mean(cv_scores):.4f} (+/- {np.std(cv_scores):.4f})")
+    else:
+        print("  CV skipped (insufficient samples)")
 
     # Refit on full data for maximum strength
     final_model = XGBClassifier(

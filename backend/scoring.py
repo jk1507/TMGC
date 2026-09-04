@@ -69,6 +69,13 @@ THREAT_LEVELS: list[tuple[int, int, str, str]] = [
     (71, 100, "MALICIOUS / PHISHING", "critical"),
 ]
 
+# ML phishing score (0-100) at which the models alone are confident enough to
+# classify a domain as at least HIGH RISK, even without header/impersonation
+# signals. Uses the OVERALL 4-model ensemble score when available (falling back
+# to the single XGBoost model), per product decision. (Verdict thresholds:
+# ~70 = Phishing; 80 leaves clear headroom.)
+HIGH_CONFIDENCE_ML_HIGH_RISK_THRESHOLD = 80.0
+
 # Default component weights when no strong signals override
 BASE_WEIGHTS: dict[str, float] = {
     "heuristics": 0.35,
@@ -1489,6 +1496,61 @@ def compute_hybrid_score(
             "IMPERSONATION OVERRIDE: Typosquatting detected — trust bonuses "
             "do not suppress phishing evidence."
         )
+
+    # ==================================================================
+    # STEP 7a: Missing-headers escalation
+    # ==================================================================
+    # When ALL critical security headers were CONFIRMED missing (the HTTP
+    # fetch succeeded, the headers simply are not there), the domain is at
+    # least a moderate (SUSPICIOUS) concern. Product decision: the header
+    # posture alone is enough — no ML condition required. A header-poor site
+    # must not be called LOW RISK just because it is old or sits on a trusted
+    # registrar. Tool failure is never treated as domain risk, so
+    # headers_unavailable (fetch failed) skips this rule.
+    if not headers_unavailable and header_score >= 10 and not is_verified_org:
+        if adjusted_score < 26:
+            adjusted_score = 26
+            reasoning_findings.append(
+                "HEADER ESCALATION: All critical security headers missing "
+                f"(header score={header_score}) — flagged as at least "
+                "SUSPICIOUS / moderate risk."
+            )
+
+    # ==================================================================
+    # STEP 7b: High-confidence ML escalation
+    # ==================================================================
+    # When the ML engines are highly confident (>80%) that the domain is
+    # phishing, it is treated as at least HIGH RISK. Uses the OVERALL
+    # 4-model ensemble score when available (falling back to the single
+    # XGBoost model). A definitive model verdict must not be dragged down to
+    # LOW RISK by age/registrar trust bonuses. Verified organizations are
+    # exempt (their ML score should never be high, and they must never be
+    # flagged).
+    ensemble_ml_score = None
+    if isinstance(ensemble_result, dict):
+        ens_val = ensemble_result.get("ensemble_score")
+        if isinstance(ens_val, (int, float)):
+            ensemble_ml_score = float(ens_val)
+    overall_ml_score = ensemble_ml_score if ensemble_ml_score is not None else (xgb_score if xgb_available else None)
+    if (
+        not is_verified_org
+        and overall_ml_score is not None
+        and overall_ml_score >= HIGH_CONFIDENCE_ML_HIGH_RISK_THRESHOLD
+    ):
+        if adjusted_score < 46:
+            adjusted_score = 46
+            if ensemble_ml_score is not None:
+                reasoning_findings.append(
+                    "HIGH-CONFIDENCE ML: Overall 4-model ensemble assigns a "
+                    f"{ensemble_ml_score:.0f}% phishing probability — flagged as "
+                    "at least HIGH RISK."
+                )
+            else:
+                reasoning_findings.append(
+                    "HIGH-CONFIDENCE ML: XGBoost model assigns a "
+                    f"{xgb_score:.0f}% phishing probability — flagged as at least "
+                    "HIGH RISK."
+                )
 
     # ==================================================================
     # STEP 8: Finalize

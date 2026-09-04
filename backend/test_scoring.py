@@ -385,6 +385,221 @@ def run_tests() -> int:
             fail_count += 1
 
     # ======================================================================
+    # TEST 10: Missing-headers + elevated ML => moderate (SUSPICIOUS) risk
+    # ======================================================================
+    print_header("TEST GROUP 10: Missing-headers + Elevated ML Escalation")
+    print("  All critical headers confirmed missing + ML a bit higher => SUSPICIOUS.")
+
+    # 10a: Clean-looking domain, ALL headers confirmed missing, ML elevated (42)
+    score, components, reasons = compute_hybrid_score(
+        domain="example-inc.com",
+        heuristic_score=10,
+        header_score=14,
+        xgb_res={"xgb_available": True, "xgb_score": 42.0, "xgb_verdict": "Suspicious"},
+        ai_score=None,
+        age_days=1000,
+        registrar="Namecheap Inc.",
+        ssl_issuer="Let's Encrypt",
+        asn="AS12345",
+        hosting="SomeHost",
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+    )
+    ok = check("Missing headers + ML 42 => at least SUSPICIOUS", score, (26, 100))
+    if not ok:
+        print(f"         -> Expected >= 26, got {score}")
+    has_escalation_reason = any("HEADER ESCALATION" in r for r in reasons)
+    total_count += 1
+    if has_escalation_reason:
+        pass_count += 1
+        print(f"       [*] Escalation reasoning present: '{[r for r in reasons if 'HEADER ESCALATION' in r][0]}'")
+    else:
+        fail_count += 1
+        print(f"  [!] FAIL: Missing HEADER ESCALATION reasoning finding")
+
+    # 10b: Same domain, LOW ML score (15) — headers ALONE still escalate,
+    #     because the header-posture rule has no ML condition.
+    score, _, reasons = compute_hybrid_score(
+        domain="example-inc.com",
+        heuristic_score=10,
+        header_score=14,
+        xgb_res={"xgb_available": True, "xgb_score": 15.0, "xgb_verdict": "Legitimate"},
+        ai_score=None,
+        age_days=1000,
+        registrar="Namecheap Inc.",
+        ssl_issuer="Let's Encrypt",
+        asn="AS12345",
+        hosting="SomeHost",
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+    )
+    ok = check("Missing headers alone (ML 15) => at least SUSPICIOUS", score, (26, 100))
+    if not ok:
+        print(f"         -> Expected >= 26 (headers alone), got {score}")
+
+    # 10c: Headers fetch FAILED (tool failure) + ML elevated => NO escalation
+    score, _, _ = compute_hybrid_score(
+        domain="example-inc.com",
+        heuristic_score=10,
+        header_score=14,
+        xgb_res={"xgb_available": True, "xgb_score": 42.0, "xgb_verdict": "Suspicious"},
+        ai_score=None,
+        age_days=1000,
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+        headers_unavailable=True,
+    )
+    ok = check("Headers tool failed + ML 42 => no escalation", score, (0, 25))
+    if not ok:
+        print(f"         -> Expected 0-25 (tool failure never raises risk), got {score}")
+
+    # 10d: Hard-protected domain never escalates even with missing headers + ML
+    score, _, _ = compute_hybrid_score(
+        domain="google.com",
+        heuristic_score=10,
+        header_score=14,
+        xgb_res={"xgb_available": True, "xgb_score": 42.0, "xgb_verdict": "Suspicious"},
+        ai_score=None,
+        age_days=8000,
+        registrar="MarkMonitor Inc.",
+        ssl_issuer="Google Trust Services",
+        asn="AS15169",
+        hosting="Google LLC",
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+    )
+    ok = check("Hard-protected domain never escalates", score, (0, 25))
+    if not ok:
+        print(f"         -> Expected 0-25 (verified org), got {score}")
+
+    # 10e: ML score just above 20 (e.g. 22) + missing headers => SUSPICIOUS too
+    score, _, reasons = compute_hybrid_score(
+        domain="example-inc.com",
+        heuristic_score=10,
+        header_score=14,
+        xgb_res={"xgb_available": True, "xgb_score": 22.0, "xgb_verdict": "Uncertain"},
+        ai_score=None,
+        age_days=1000,
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+    )
+    ok = check("Missing headers + ML 22 => at least SUSPICIOUS", score, (26, 100))
+    if not ok:
+        print(f"         -> Expected >= 26 (threshold 20), got {score}")
+    has_escalation_reason = any("HEADER ESCALATION" in r for r in reasons)
+    total_count += 1
+    if has_escalation_reason:
+        pass_count += 1
+    else:
+        fail_count += 1
+        print(f"  [!] FAIL: Missing HEADER ESCALATION reasoning for ML 22")
+
+    # ======================================================================
+    # TEST 11: High-confidence ML (>= 80) => at least HIGH RISK
+    # ======================================================================
+    print_header("TEST GROUP 11: High-Confidence ML => HIGH RISK")
+    print("  ML >= 80 alone must be at least HIGH RISK (46+).")
+
+    # 11a: Clean-looking domain, low heuristic, but ML 85
+    score, _, reasons = compute_hybrid_score(
+        domain="randomstartup.io",
+        heuristic_score=10,
+        header_score=5,
+        xgb_res={"xgb_available": True, "xgb_score": 85.0, "xgb_verdict": "Phishing"},
+        ai_score=None,
+        age_days=300,
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+    )
+    ok = check("ML 85 alone => at least HIGH RISK", score, (46, 100))
+    if not ok:
+        print(f"         -> Expected >= 46, got {score}")
+    has_ml_reason = any("HIGH-CONFIDENCE ML" in r for r in reasons)
+    total_count += 1
+    if has_ml_reason:
+        pass_count += 1
+    else:
+        fail_count += 1
+        print(f"  [!] FAIL: Missing HIGH-CONFIDENCE ML reasoning")
+
+    # 11b: ML 85 but verified org => never flagged
+    score, _, _ = compute_hybrid_score(
+        domain="github.com",
+        heuristic_score=10,
+        header_score=8,
+        xgb_res={"xgb_available": True, "xgb_score": 85.0, "xgb_verdict": "Phishing"},
+        ai_score=None,
+        age_days=6000,
+        registrar="MarkMonitor Inc.",
+        ssl_issuer="GitHub Inc.",
+        asn="AS36459",
+        hosting="GitHub Inc.",
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+    )
+    ok = check("ML 85 verified org never escalates", score, (0, 25))
+    if not ok:
+        print(f"         -> Expected 0-25 (verified org), got {score}")
+
+    # 11c: ML just below 80 (79) must NOT reach HIGH RISK on its own
+    score, _, reasons = compute_hybrid_score(
+        domain="randomstartup.io",
+        heuristic_score=10,
+        header_score=5,
+        xgb_res={"xgb_available": True, "xgb_score": 79.0, "xgb_verdict": "Phishing"},
+        ai_score=None,
+        age_days=300,
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+    )
+    ok = check("ML 79 alone stays below HIGH RISK", score, (0, 45))
+    if not ok:
+        print(f"         -> Expected 0-45 (below HIGH RISK), got {score}")
+
+    # 11d: OVERALL 4-model ENSEMBLE >= 80 => at least HIGH RISK (even if xgb low)
+    score, _, reasons = compute_hybrid_score(
+        domain="randomstartup.io",
+        heuristic_score=10,
+        header_score=5,
+        xgb_res={"xgb_available": True, "xgb_score": 30.0, "xgb_verdict": "Legitimate"},
+        ai_score=None,
+        age_days=300,
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+        ensemble_result={"ensemble_score": 84.0, "model_count": 4},
+    )
+    ok = check("Ensemble 84 (xgb 30) => at least HIGH RISK", score, (46, 100))
+    if not ok:
+        print(f"         -> Expected >= 46 (ensemble drives rule), got {score}")
+
+    # 11e: Ensemble available but below 80 (55) while xgb is high (88) —
+    #     the OVERALL 4-model score governs, so no HIGH RISK escalation.
+    score, _, reasons = compute_hybrid_score(
+        domain="randomstartup.io",
+        heuristic_score=10,
+        header_score=5,
+        xgb_res={"xgb_available": True, "xgb_score": 88.0, "xgb_verdict": "Phishing"},
+        ai_score=None,
+        age_days=300,
+        has_valid_ssl=True,
+        has_mx=True,
+        has_nameservers=True,
+        ensemble_result={"ensemble_score": 55.0, "model_count": 4},
+    )
+    ok = check("Ensemble 55 governs (xgb 88) => no escalation", score, (0, 45))
+    if not ok:
+        print(f"         -> Expected 0-45 (ensemble governs), got {score}")
+
+    # ======================================================================
     # SUMMARY
     # ======================================================================
     print()

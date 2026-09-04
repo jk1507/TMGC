@@ -387,16 +387,16 @@ def feature_vector_for(domain: str, age_days: int, privacy: float = 0.0, suspici
     from utils import (
         detect_combosquatting,
         detect_homoglyphs,
-detect_typosquatting,
-    extract_features,
-    normalize_homoglyphs,
-    # Unified TLD lists
-    SUSPICIOUS_TLDS,
-    SUSPICIOUS_TLDS_DOT,
-)
-import re
-import numpy as np
-from main import KNOWN_BRANDS, clean_domain
+        detect_typosquatting,
+        extract_features,
+        normalize_homoglyphs,
+        # Unified TLD lists
+        SUSPICIOUS_TLDS,
+        SUSPICIOUS_TLDS_DOT,
+    )
+    import re
+    import numpy as np
+    from main import KNOWN_BRANDS, clean_domain
 
     clean = clean_domain(domain)
     parts = clean.split(".")

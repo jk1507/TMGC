@@ -71,6 +71,7 @@ export default function PremiumDashboard({
   ensembleResult,
   loadingEnsemble,
   analyzeEnsemble,
+  mlInferenceMs,
 }) {
   const riskScore = data?.risk_score || 0;
   const dataInsufficient = Boolean(data?.data_completeness?.insufficient) || isAllDataNA(data);
@@ -421,6 +422,15 @@ export default function PremiumDashboard({
                   <MetaRow label="Domain Age" value={data?.parsed_meta?.domain_age || "—"} />
                   <MetaRow label="Last Updated" value={scanMeta.completedAt ? new Date(scanMeta.completedAt).toLocaleString() : "—"} />
                   <MetaRow label="Scan Duration" value={scanMeta.durationMs ? formatDuration(scanMeta.durationMs) : loading ? "Running..." : "—"} />
+                  {mlInferenceMs != null && (
+                    <MetaRow label="Total Scan" value={`${mlInferenceMs}ms`} highlight />
+                  )}
+                  {data?.timing?.ml_model_ms != null && data.timing.ml_model_ms > 0 && (
+                    <MetaRow label="ML Model" value={`${data.timing.ml_model_ms}ms`} highlight />
+                  )}
+                  {data?.timing?.total_ms != null && (
+                    <MetaRow label="Backend" value={`${data.timing.total_ms}ms`} />
+                  )}
                   {/* Show confidence level and percentage from backend, not a hardcoded "High" label */}
                   {confidenceLevel != null && (
                     <MetaRow label="Confidence" value={`${confidenceLevel} ${confidencePct}%`} highlight />
@@ -570,7 +580,7 @@ export default function PremiumDashboard({
                   type="button"
                   className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-[10px] font-bold text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-40"
                   disabled={loadingAI || !data}
-                  onClick={runAIAnalysis}
+                  onClick={() => runAIAnalysis(data?.raw_context || "")}
                 >
                   {loadingAI ? "RUNNING..." : "RUN AI ANALYSIS"}
                 </button>
@@ -1001,12 +1011,26 @@ export default function PremiumDashboard({
 
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               <div className="rounded-xl border border-yellow-900/30 bg-yellow-950/5 p-4">
-                <h4 className="mb-2 text-sm font-bold text-yellow-400">ML THREAT ANALYSIS</h4>
+                <div className="mb-2 flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-yellow-400">ML THREAT ANALYSIS</h4>
+                  {data?.timing?.ml_model_ms != null && data.timing.ml_model_ms > 0 && (
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wider ${data.timing.ml_model_ms < 50 ? "border border-green-800/50 bg-green-950/30 text-green-400" : "border border-red-800/50 bg-red-950/30 text-red-400"}`}>
+                      ML: {data.timing.ml_model_ms}ms {data.timing.ml_model_ms < 50 ? "⚡" : "🐢"}
+                    </span>
+                  )}
+                </div>
                 {data?.ml_result?.xgb_available ? (
                   <div className="space-y-2 text-sm text-yellow-100/80">
                     <p className="text-xs font-bold text-yellow-600 tracking-wider">XGBoost (Single Model)</p>
                     <p><strong>VERDICT:</strong> {data.ml_result.xgb_verdict?.toUpperCase()}</p>
                     <p><strong>ML SCORE:</strong> {data.ml_result.xgb_score}/100</p>
+                    {data?.timing && (
+                      <div className="text-[11px] text-zinc-500 space-y-0.5">
+                        {data.timing.ml_model_ms > 0 && <p>ML Model Inference: {data.timing.ml_model_ms}ms</p>}
+                        {data.timing.total_ms > 0 && <p>Backend Processing: {data.timing.total_ms}ms</p>}
+                        {data.timing.frontend_total_ms > 0 && <p>Total (incl. network): {data.timing.frontend_total_ms}ms</p>}
+                      </div>
+                    )}
                     <ul className="ml-5 list-disc text-xs space-y-1">
                       {data.findings?.filter((x) => x.includes("ML ANALYSIS")).map((item, i) => <li key={i}>{item}</li>)}
                     </ul>
@@ -1562,8 +1586,15 @@ function isAllDataNA(data) {
     data.parsed_meta?.registrar,
   ];
   const allNA = keyFields.every(f => !f || f === "N/A" || f === "—");
-  // Show DATA NOT FOUND if all key fields are N/A and score is low/mid range
-  return allNA && (data.risk_score || 0) < 50;
+  // A high-confidence ML verdict IS evidence — never hide it behind
+  // "DATA NOT FOUND" just because the infrastructure lookups came back
+  // empty (e.g. reserved non-resolving TLDs like .test / .local).
+  const confidentMl =
+    (data.ml_result?.xgb_available && Number(data.ml_result?.xgb_score) >= 80) ||
+    Number(data.ensemble_ml?.ensemble_score) >= 80;
+  // Show DATA NOT FOUND only when there is genuinely no meaningful signal:
+  // all infra fields are N/A AND the score stayed LOW (no engine raised it).
+  return allNA && !confidentMl && (data.risk_score || 0) < 26;
 }
 
 export function getVerdictInfo(riskScore, data, dataInsufficient = false) {
