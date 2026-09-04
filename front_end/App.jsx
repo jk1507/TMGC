@@ -337,7 +337,10 @@ throw new Error(
       const response = await fetch(`${API_BASE}/api/v1/cnn-analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dom_features: data.score_components || {} }),
+        body: JSON.stringify({
+          dom_features: buildCnnDomFeatures(data),
+          visual_features: buildVisualFeatures(data),
+        }),
       });
       
       if (!response.ok) {
@@ -366,7 +369,7 @@ throw new Error(
       const response = await fetch(`${API_BASE}/api/v1/gnn-analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ graph_data: data.score_components || {} }),
+        body: JSON.stringify({ graph_data: buildGraphFeatures(data) }),
       });
       
       if (!response.ok) {
@@ -397,8 +400,9 @@ throw new Error(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email_text: emailText,
-          dom_features: data.score_components || {},
-          graph_data: data.score_components || {},
+          dom_features: buildCnnDomFeatures(data),
+          visual_features: buildVisualFeatures(data),
+          graph_data: buildGraphFeatures(data),
           xgboost_result: data.ml_result || {},
         }),
       });
@@ -986,6 +990,68 @@ function defaultHeaderRows() {
     "Cross-Origin-Opener-Policy",
     "Cross-Origin-Resource-Policy",
   ].map((name) => normalizeHeaderRow({ name, enabled: false }));
+}
+
+function buildCnnDomFeatures(data) {
+  const components = data?.score_components || {};
+  const rawLogs = data?.raw_logs || {};
+  const htmlLike = [rawLogs.curl, rawLogs.browser, rawLogs.content].filter(Boolean).join("\n");
+  const findingsText = (data?.findings || []).join(" ");
+  const headerMissing = (data?.security_header_details || []).filter((header) => !header.enabled).length;
+  return {
+    total_elements: countMatches(htmlLike, /<[a-zA-Z][^>\s]*/g) || Number(components.total_elements || 0),
+    form_count: countMatches(htmlLike, /<form\b/gi) || Number(components.form_count || 0),
+    password_form_count: countMatches(htmlLike, /type\s*=\s*["']?password/gi) || Number(components.password_form_count || 0),
+    script_count: countMatches(htmlLike, /<script\b/gi) || Number(components.script_count || 0),
+    image_count: countMatches(htmlLike, /<img\b/gi) || Number(components.image_count || 0),
+    iframe_count: countMatches(htmlLike, /<iframe\b/gi) || Number(components.iframe_count || 0),
+    hidden_element_count: countMatches(htmlLike, /display\s*:\s*none|visibility\s*:\s*hidden/gi) || Number(components.hidden_element_count || 0),
+    external_script_count: countMatches(htmlLike, /<script[^>]+src\s*=\s*["']https?:\/\//gi) || Number(components.external_script_count || 0),
+    brands_detected_count: countMatches(findingsText, /brand|impersonat|typosquat|homograph/gi) || Number(components.brands_detected_count || 0),
+    obfuscation_count: countMatches(htmlLike, /eval\s*\(|document\.write\s*\(|\\x[0-9a-f]{2}/gi) || Number(components.obfuscation_count || 0),
+    html_length: htmlLike.length || Number(components.html_length || components.content_length || 0),
+    has_login_form: /login|password|credential/i.test(htmlLike + findingsText),
+    has_external_action: countMatches(htmlLike, /<form[^>]+action\s*=\s*["']https?:\/\//gi) > 0,
+    missing_security_headers: headerMissing,
+  };
+}
+
+function buildVisualFeatures(data) {
+  const components = data?.score_components || {};
+  return {
+    width: Number(components.viewport_width || 0),
+    height: Number(components.viewport_height || 0),
+    aspect_ratio: Number(components.aspect_ratio || 0),
+    dark_ratio: Number(components.dark_ratio || 0),
+    light_ratio: Number(components.light_ratio || 0),
+    entropy: Number(components.visual_entropy || 0),
+  };
+}
+
+function buildGraphFeatures(data) {
+  const nameservers = data?.nameservers || [];
+  const sharedCount = Number(data?.score_components?.shared_infrastructure_count || 0);
+  const nodeCount = Math.max(1, 1 + nameservers.length + (data?.ip_address ? 1 : 0));
+  const edgeCount = Math.max(sharedCount, nameservers.length + (data?.ip_address ? 1 : 0));
+  const maxEdges = nodeCount * (nodeCount - 1) / 2;
+  return {
+    node_count: Number(data?.score_components?.node_count || nodeCount),
+    edge_count: Number(data?.score_components?.edge_count || edgeCount),
+    density: Number(data?.score_components?.density || (maxEdges ? edgeCount / maxEdges : 0)),
+    avg_degree: Number(data?.score_components?.avg_degree || (nodeCount ? (2 * edgeCount) / nodeCount : 0)),
+    max_degree: Number(data?.score_components?.max_degree || Math.max(1, nameservers.length)),
+    cluster_count: Number(data?.score_components?.cluster_count || 0),
+    largest_cluster_size: Number(data?.score_components?.largest_cluster_size || 0),
+    shared_infrastructure_count: sharedCount,
+    centrality_max: Number(data?.score_components?.centrality_max || (nodeCount > 1 ? Math.max(1, nameservers.length) / (nodeCount - 1) : 0)),
+    centrality_avg: Number(data?.score_components?.centrality_avg || 0),
+    nameserver_count: nameservers.length,
+    has_ip: Boolean(data?.ip_address),
+  };
+}
+
+function countMatches(text, regex) {
+  return String(text || "").match(regex)?.length || 0;
 }
 
 function normalizeHeaderRow(header) {

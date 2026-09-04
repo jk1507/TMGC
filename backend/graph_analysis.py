@@ -299,7 +299,7 @@ def _assess_cluster_risk(cluster: InfrastructureCluster) -> InfrastructureCluste
 
     # Many domains sharing IPs = suspicious
     if len(cluster.domains) > 10:
-        findings.append(f"Large cluster: {len(domains)} domains share infrastructure")
+        findings.append(f"Large cluster: {len(cluster.domains)} domains share infrastructure")
         risk += 20
 
     # Many domains sharing nameservers

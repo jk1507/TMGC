@@ -1177,8 +1177,18 @@ export default function PremiumDashboard({
                   
                   {cnnResult && (
                     <div className="mt-6 rounded-xl border border-green-900/30 bg-black/20 p-4">
-                      <h4 className="text-sm font-bold text-green-400">CNN ANALYSIS RESULTS</h4>
-                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h4 className="text-sm font-bold text-green-400">CNN ANALYSIS RESULTS</h4>
+                        <span className="rounded-md border border-green-900/40 px-2 py-1 text-[10px] font-bold text-zinc-500">
+                          {cnnResult.model_name || "cnn_visual"}
+                        </span>
+                      </div>
+                      {cnnResult.error && (
+                        <p className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-950/10 p-3 text-xs text-yellow-200">
+                          {cnnResult.error}
+                        </p>
+                      )}
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                         <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
                           <p className="text-[10px] font-bold text-zinc-500">VISUAL RISK SCORE</p>
                           <p className="mt-1 text-2xl font-bold text-green-400">{cnnResult.score?.toFixed(1) || 0}%</p>
@@ -1187,20 +1197,30 @@ export default function PremiumDashboard({
                           <p className="text-[10px] font-bold text-zinc-500">CONFIDENCE</p>
                           <p className="mt-1 text-2xl font-bold text-green-400">{cnnResult.confidence?.toFixed(1) || 0}%</p>
                         </div>
-                      </div>
-                      <div className="mt-3 rounded-lg border border-green-950/50 bg-black/30 p-3">
-                        <p className="text-[10px] font-bold text-zinc-500">VERDICT</p>
-                        <p className={`mt-1 text-lg font-bold ${
-                          cnnResult.verdict === "phishing" ? "text-red-400" :
-                          cnnResult.verdict === "suspicious" ? "text-orange-400" :
-                          "text-green-400"
-                        }`}>{cnnResult.verdict?.toUpperCase() || "UNKNOWN"}</p>
-                      </div>
-                      {cnnResult.risk_indicators > 0 && (
-                        <div className="mt-3">
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">VERDICT</p>
+                          <p className={`mt-1 break-words text-lg font-bold ${
+                            cnnResult.verdict === "phishing" ? "text-red-400" :
+                            cnnResult.verdict === "suspicious" ? "text-orange-400" :
+                            "text-green-400"
+                          }`}>{cnnResult.verdict?.toUpperCase() || "UNKNOWN"}</p>
+                        </div>
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
                           <p className="text-[10px] font-bold text-zinc-500">RISK INDICATORS: {cnnResult.risk_indicators}</p>
+                          <p className="mt-1 text-sm text-zinc-400">Vector size: {cnnResult.feature_vector_size || 0}</p>
+                        </div>
+                      </div>
+                      {cnnResult.findings?.length > 0 && (
+                        <div className="tmgc-scrollbar mt-3 max-h-[160px] overflow-y-auto rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">FINDINGS</p>
+                          <ul className="mt-2 space-y-1">
+                            {cnnResult.findings.map((finding, i) => (
+                              <li key={i} className="break-words text-xs text-zinc-400">- {finding}</li>
+                            ))}
+                          </ul>
                         </div>
                       )}
+                      <FeatureSummary title="DOM FEATURES USED" features={cnnResult.dom_features_used} />
                     </div>
                   )}
                 </>
@@ -1235,8 +1255,18 @@ export default function PremiumDashboard({
                   
                   {gnnResult && (
                     <div className="mt-6 rounded-xl border border-green-900/30 bg-black/20 p-4">
-                      <h4 className="text-sm font-bold text-green-400">GNN ANALYSIS RESULTS</h4>
-                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h4 className="text-sm font-bold text-green-400">GNN ANALYSIS RESULTS</h4>
+                        <span className="rounded-md border border-green-900/40 px-2 py-1 text-[10px] font-bold text-zinc-500">
+                          {gnnResult.model_name || "gnn_graph"}
+                        </span>
+                      </div>
+                      {gnnResult.error && (
+                        <p className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-950/10 p-3 text-xs text-yellow-200">
+                          {gnnResult.error}
+                        </p>
+                      )}
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                         <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
                           <p className="text-[10px] font-bold text-zinc-500">GRAPH RISK SCORE</p>
                           <p className="mt-1 text-2xl font-bold text-green-400">{gnnResult.score?.toFixed(1) || 0}%</p>
@@ -1245,25 +1275,32 @@ export default function PremiumDashboard({
                           <p className="text-[10px] font-bold text-zinc-500">CONFIDENCE</p>
                           <p className="mt-1 text-2xl font-bold text-green-400">{gnnResult.confidence?.toFixed(1) || 0}%</p>
                         </div>
-                      </div>
-                      <div className="mt-3 rounded-lg border border-green-950/50 bg-black/30 p-3">
-                        <p className="text-[10px] font-bold text-zinc-500">VERDICT</p>
-                        <p className={`mt-1 text-lg font-bold ${
-                          gnnResult.verdict === "phishing" ? "text-red-400" :
-                          gnnResult.verdict === "suspicious" ? "text-orange-400" :
-                          "text-green-400"
-                        }`}>{gnnResult.verdict?.toUpperCase() || "UNKNOWN"}</p>
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">VERDICT</p>
+                          <p className={`mt-1 break-words text-lg font-bold ${
+                            gnnResult.verdict === "phishing" ? "text-red-400" :
+                            gnnResult.verdict === "suspicious" ? "text-orange-400" :
+                            "text-green-400"
+                          }`}>{gnnResult.verdict?.toUpperCase() || "UNKNOWN"}</p>
+                        </div>
+                        <div className="rounded-lg border border-green-950/50 bg-black/30 p-3">
+                          <p className="text-[10px] font-bold text-zinc-500">GRAPH SIZE</p>
+                          <p className="mt-1 text-sm text-zinc-400">
+                            {gnnResult.graph_metrics?.node_count || 0} nodes / {gnnResult.graph_metrics?.edge_count || 0} edges
+                          </p>
+                        </div>
                       </div>
                       {gnnResult.findings && gnnResult.findings.length > 0 && (
-                        <div className="mt-3">
+                        <div className="tmgc-scrollbar mt-3 max-h-[160px] overflow-y-auto rounded-lg border border-green-950/50 bg-black/30 p-3">
                           <p className="text-[10px] font-bold text-zinc-500">FINDINGS</p>
                           <ul className="mt-2 space-y-1">
                             {gnnResult.findings.map((finding, i) => (
-                              <li key={i} className="text-xs text-zinc-400">• {finding}</li>
+                              <li key={i} className="break-words text-xs text-zinc-400">- {finding}</li>
                             ))}
                           </ul>
                         </div>
                       )}
+                      <FeatureSummary title="GRAPH FEATURES USED" features={gnnResult.graph_features_used || gnnResult.graph_metrics} />
                     </div>
                   )}
                 </>
@@ -1701,6 +1738,28 @@ export function countRecommendations(data, headerRows) {
   const headerRecs = headerRows.filter((h) => h.recommendation && h.recommendation !== "N/A").length;
   const findingRecs = (data.findings || []).filter((f) => /MEDIUM RISK|SSL|HEADER|RECOMMEND|BROWSER|GRAVATAR|DNS/i.test(f)).length;
   return headerRecs + findingRecs;
+}
+
+function FeatureSummary({ title, features }) {
+  const rows = Object.entries(features || {})
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .slice(0, 12);
+
+  if (!rows.length) return null;
+
+  return (
+    <div className="mt-3 rounded-lg border border-green-950/50 bg-black/30 p-3">
+      <p className="text-[10px] font-bold text-zinc-500">{title}</p>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {rows.map(([key, value]) => (
+          <div key={key} className="min-w-0 rounded-md border border-green-950/40 bg-black/30 px-2 py-1.5">
+            <p className="truncate text-[10px] font-bold uppercase text-zinc-600">{key.replace(/_/g, " ")}</p>
+            <p className="truncate text-xs text-green-300">{String(value)}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ASN number to provider name mapping

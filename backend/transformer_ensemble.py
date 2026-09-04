@@ -360,6 +360,9 @@ def analyze_visual_cnn(dom_features: dict[str, Any], visual_features: dict[str, 
         }
     
     try:
+        dom_features = _coerce_cnn_dom_features(dom_features or {})
+        visual_features = visual_features or {}
+
         # Build feature vector from DOM features
         feature_vector = []
         
@@ -432,6 +435,18 @@ def analyze_visual_cnn(dom_features: dict[str, Any], visual_features: dict[str, 
             risk_indicators += 1
         if dom_features.get("brands_detected_count", 0) > 0:
             risk_indicators += 1
+
+        findings = []
+        if dom_features.get("password_form_count", 0) > 0:
+            findings.append(f"Credential form signals detected ({int(dom_features.get('password_form_count', 0))})")
+        if dom_features.get("has_external_action", False):
+            findings.append("Form action points outside the analyzed origin")
+        if dom_features.get("obfuscation_count", 0) > 2:
+            findings.append(f"Script obfuscation markers detected ({int(dom_features.get('obfuscation_count', 0))})")
+        if dom_features.get("brands_detected_count", 0) > 0:
+            findings.append(f"Brand-like DOM markers detected ({int(dom_features.get('brands_detected_count', 0))})")
+        if dom_features.get("iframe_count", 0) > 0:
+            findings.append(f"Embedded frame surface present ({int(dom_features.get('iframe_count', 0))})")
         
         # Adjust score based on risk indicators
         adjusted_score = min(1.0, phishing_score + (risk_indicators * 0.1))
@@ -451,6 +466,10 @@ def analyze_visual_cnn(dom_features: dict[str, Any], visual_features: dict[str, 
             "confidence": round(confidence * 100, 2),
             "verdict": verdict,
             "risk_indicators": risk_indicators,
+            "findings": findings,
+            "feature_vector_size": len(feature_vector),
+            "dom_features_used": dom_features,
+            "visual_features_used": visual_features,
             "probabilities": {
                 "phishing": round(phishing_score, 4),
                 "legitimate": round(legitimate_score, 4),
@@ -471,6 +490,74 @@ def analyze_visual_cnn(dom_features: dict[str, Any], visual_features: dict[str, 
 # ---------------------------------------------------------------------------
 # GNN Graph Analysis
 # ---------------------------------------------------------------------------
+def _to_float(value: Any, default: float = 0.0) -> float:
+    """Best-effort conversion for scan payload values."""
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip().rstrip("%"))
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_cnn_dom_features(features: dict[str, Any]) -> dict[str, Any]:
+    """Accept raw scan score components or explicit DOM features."""
+    if "dom_features" in features and isinstance(features["dom_features"], dict):
+        features = features["dom_features"]
+
+    canonical = {
+        "total_elements": _to_float(features.get("total_elements", features.get("html_length", 0) or 0)),
+        "form_count": _to_float(features.get("form_count", features.get("forms", 0))),
+        "password_form_count": _to_float(features.get("password_form_count", features.get("password_forms", 0))),
+        "script_count": _to_float(features.get("script_count", features.get("scripts", 0))),
+        "image_count": _to_float(features.get("image_count", features.get("images", 0))),
+        "iframe_count": _to_float(features.get("iframe_count", features.get("iframes", 0))),
+        "hidden_element_count": _to_float(features.get("hidden_element_count", features.get("hidden_elements", 0))),
+        "external_script_count": _to_float(features.get("external_script_count", features.get("external_scripts", 0))),
+        "brands_detected_count": _to_float(features.get("brands_detected_count", features.get("brand_hits", 0))),
+        "obfuscation_count": _to_float(features.get("obfuscation_count", features.get("obfuscation_indicators", 0))),
+        "html_length": _to_float(features.get("html_length", features.get("content_length", 0))),
+        "has_login_form": bool(features.get("has_login_form") or _to_float(features.get("password_form_count", 0)) > 0),
+        "has_external_action": bool(features.get("has_external_action") or _to_float(features.get("external_actions", 0)) > 0),
+    }
+    return canonical
+
+
+def _coerce_graph_features(graph_data: dict[str, Any]) -> dict[str, Any]:
+    """Accept raw graph-analysis responses, graph_features, or generic scan components."""
+    if "graph_features" in graph_data and isinstance(graph_data["graph_features"], dict):
+        graph_data = graph_data["graph_features"]
+
+    node_count = _to_float(graph_data.get("node_count", 0))
+    edge_count = _to_float(graph_data.get("edge_count", 0))
+    if node_count <= 0:
+        nameserver_count = _to_float(graph_data.get("nameserver_count", graph_data.get("nameservers", 0)))
+        ip_present = 1 if graph_data.get("has_ip") or graph_data.get("ip_address") else 0
+        node_count = max(1.0, 1.0 + nameserver_count + ip_present)
+    if edge_count <= 0:
+        edge_count = max(0.0, _to_float(graph_data.get("shared_infrastructure_count", 0)))
+
+    max_edges = node_count * (node_count - 1) / 2
+    density = _to_float(graph_data.get("density", 0.0))
+    if density <= 0 and max_edges > 0:
+        density = edge_count / max_edges
+
+    return {
+        "node_count": node_count,
+        "edge_count": edge_count,
+        "density": density,
+        "avg_degree": _to_float(graph_data.get("avg_degree", (2 * edge_count / node_count) if node_count else 0)),
+        "max_degree": _to_float(graph_data.get("max_degree", edge_count)),
+        "cluster_count": _to_float(graph_data.get("cluster_count", 0)),
+        "largest_cluster_size": _to_float(graph_data.get("largest_cluster_size", 0)),
+        "shared_infrastructure_count": _to_float(graph_data.get("shared_infrastructure_count", 0)),
+        "centrality_max": _to_float(graph_data.get("centrality_max", 0.0)),
+        "centrality_avg": _to_float(graph_data.get("centrality_avg", 0.0)),
+    }
+
+
 def analyze_graph_gnn(graph_data: dict[str, Any]) -> dict[str, Any]:
     """
     Analyze domain relationship graph using graph-based features.
@@ -482,6 +569,8 @@ def analyze_graph_gnn(graph_data: dict[str, Any]) -> dict[str, Any]:
         Dict with prediction scores and confidence
     """
     try:
+        graph_data = _coerce_graph_features(graph_data or {})
+
         # Extract graph features
         node_count = graph_data.get("node_count", 0)
         edge_count = graph_data.get("edge_count", 0)
@@ -545,9 +634,14 @@ def analyze_graph_gnn(graph_data: dict[str, Any]) -> dict[str, Any]:
                 "node_count": node_count,
                 "edge_count": edge_count,
                 "density": density,
+                "avg_degree": avg_degree,
+                "max_degree": max_degree,
                 "cluster_count": cluster_count,
+                "largest_cluster_size": largest_cluster,
                 "shared_infrastructure": shared_infra,
+                "centrality_max": centrality_max,
             },
+            "graph_features_used": graph_data,
             "model_name": "gnn_graph",
         }
         
