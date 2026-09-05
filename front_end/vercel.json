@@ -28,8 +28,5 @@
         }
       ]
     }
-  ],
-  "env": {
-    "VITE_API_URL": "@vite-api-url"
-  }
+  ]
 }
