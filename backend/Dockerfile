@@ -26,7 +26,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install PyTorch first so PyTorch Geometric extensions can build/install correctly
+RUN pip install --no-cache-dir "torch==2.5.1"
+
+# Install remaining Python dependencies
+RUN pip install --no-cache-dir \
+    --find-links https://data.pyg.org/whl/torch-2.5.1+cpu.html \
+    -r requirements.txt
 
 # Install Playwright browsers (for browser automation)
 RUN python -m playwright install chromium --with-deps || true
