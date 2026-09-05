@@ -39,9 +39,9 @@ RUN python -m playwright install chromium --with-deps || true
 
 # Copy backend source code
 COPY *.py ./
-COPY *.pkl ./ 2>/dev/null || true
-COPY *.onnx ./ 2>/dev/null || true
-COPY *.csv ./ 2>/dev/null || true
+COPY *.pkl ./
+COPY *.onnx ./
+COPY *.csv ./
 
 # Copy .env if it exists (will be overridden by docker-compose)
 COPY .env* ./
